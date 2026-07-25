@@ -1041,7 +1041,7 @@ def test_generate_website_image_uses_healthz_liveness_probe(tmp_path: Path) -> N
 
 
 def test_generate_website_hugo_uses_root_liveness_probe(tmp_path: Path) -> None:
-    """Hugo-backed websites should get an HTTP liveness probe on /."""
+    """Hugo-backed websites should get an HTTPS liveness probe on /."""
     config = WebsiteConfig(
         name="hugo.example.com",
         namespace="web",
@@ -1058,7 +1058,119 @@ def test_generate_website_hugo_uses_root_liveness_probe(tmp_path: Path) -> None:
     deployment_doc = yaml.safe_load(deployment_path.read_text())
 
     container = deployment_doc["spec"]["template"]["spec"]["containers"][0]
-    assert container["livenessProbe"] == {"httpGet": {"path": "/", "port": 8080}}
+    assert container["livenessProbe"] == {
+        "httpGet": {"path": "/", "port": "https", "scheme": "HTTPS"}
+    }
+
+
+def test_generate_website_hugo_uses_cluster_local_backend_tls(tmp_path: Path) -> None:
+    """Hugo-backed websites should serve HTTPS with a cluster-local identity."""
+    config = WebsiteConfig(
+        name="hugo.example.com",
+        namespace="web",
+        hugo_repo="https://github.com/user/repo",
+    )
+    images = {
+        "git_image": "alpine/git:2.47.2",
+        "hugo_image": "floryn90/hugo:0.155.3-alpine",
+        "static_web_server_image": "ghcr.io/static-web-server/static-web-server:2.43",
+    }
+    paths = generate_website(config, tmp_path / "output", images=images)
+    documents = {
+        (doc["kind"], doc["metadata"]["name"]): doc
+        for path in paths
+        if (doc := yaml.safe_load(path.read_text()))
+    }
+
+    deployment = documents[("Deployment", "hugo-example-com")]
+    pod_spec = deployment["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    assert container["ports"] == [
+        {"containerPort": 8443, "name": "https", "protocol": "TCP"}
+    ]
+    assert {entry["name"]: entry["value"] for entry in container["env"]} == {
+        "SERVER_PORT": "8443",
+        "SERVER_HTTP2_TLS": "true",
+        "SERVER_HTTP2_TLS_CERT": "/tls/tls.crt",
+        "SERVER_HTTP2_TLS_KEY": "/tls/tls.key",
+    }
+    assert {"mountPath": "/tls", "name": "tls", "readOnly": True} in container[
+        "volumeMounts"
+    ]
+    assert {
+        "name": "tls",
+        "secret": {"secretName": "hugo-example-com-internal-tls"},
+    } in pod_spec["volumes"]
+
+    service = documents[("Service", "hugo-example-com")]
+    assert service["spec"]["ports"] == [
+        {
+            "name": "https",
+            "appProtocol": "https",
+            "protocol": "TCP",
+            "port": 443,
+            "targetPort": "https",
+        }
+    ]
+
+    route = documents[("HTTPRoute", "hugo-example-com")]
+    assert route["spec"]["rules"][0]["backendRefs"][0]["port"] == 443
+
+    certificate = documents[("Certificate", "hugo-example-com-internal")]
+    assert certificate["spec"]["dnsNames"] == ["hugo-example-com.web.svc"]
+    assert certificate["spec"]["issuerRef"] == {
+        "name": "cluster-local",
+        "kind": "ClusterIssuer",
+        "group": "cert-manager.io",
+    }
+    assert certificate["spec"]["secretName"] == "hugo-example-com-internal-tls"
+
+    policy = documents[("BackendTLSPolicy", "hugo-example-com")]
+    assert policy["spec"]["targetRefs"] == [
+        {
+            "group": "",
+            "kind": "Service",
+            "name": "hugo-example-com",
+            "sectionName": "https",
+        }
+    ]
+    assert policy["spec"]["validation"] == {
+        "caCertificateRefs": [
+            {"group": "", "kind": "ConfigMap", "name": "cluster-local-ca"}
+        ],
+        "hostname": "hugo-example-com.web.svc",
+    }
+
+
+def test_generate_website_image_backend_remains_http(tmp_path: Path) -> None:
+    """Image-backed websites should retain the existing HTTP backend contract."""
+    config = WebsiteConfig(
+        name="app.example.com",
+        namespace="apps",
+        image="example.com/app:latest",
+    )
+    paths = generate_website(config, tmp_path / "output")
+    documents = [
+        doc for path in paths if (doc := yaml.safe_load(path.read_text())) is not None
+    ]
+
+    service = next(doc for doc in documents if doc["kind"] == "Service")
+    assert service["spec"]["ports"] == [
+        {"protocol": "TCP", "port": 80, "targetPort": 8080}
+    ]
+
+    route = next(doc for doc in documents if doc["kind"] == "HTTPRoute")
+    assert route["spec"]["rules"][0]["backendRefs"][0]["port"] == 80
+
+    deployment = next(doc for doc in documents if doc["kind"] == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["livenessProbe"] == {"httpGet": {"path": "/healthz", "port": 8080}}
+    assert all(doc["kind"] != "BackendTLSPolicy" for doc in documents)
+    assert all(
+        doc["kind"] != "Certificate"
+        or doc["metadata"]["name"] != "app-example-com-internal"
+        for doc in documents
+    )
 
 
 def test_generate_website_bundled_template_env(tmp_path: Path) -> None:
@@ -1095,7 +1207,7 @@ def test_generate_website_hugo_container_adds_configured_env(tmp_path: Path) -> 
     deployment_doc = yaml.safe_load(deployment_path.read_text())
 
     container = deployment_doc["spec"]["template"]["spec"]["containers"][0]
-    assert {"name": "SERVER_PORT", "value": "8080"} in container["env"]
+    assert {"name": "SERVER_PORT", "value": "8443"} in container["env"]
     assert {"name": "LOG_LEVEL", "value": "debug"} in container["env"]
 
 

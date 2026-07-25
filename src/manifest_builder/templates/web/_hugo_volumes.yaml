@@ -2,3 +2,6 @@
   emptyDir: {}
 - name: public
   emptyDir: {}
+- name: tls
+  secret:
+    secretName: {{k8s_name}}-internal-tls

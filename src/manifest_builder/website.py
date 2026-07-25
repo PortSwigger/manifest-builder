@@ -495,18 +495,23 @@ def _inject_env_vars(doc: dict, env: dict[str, str]) -> None:
         container.setdefault("env", []).extend(_make_env_vars(env))
 
 
-def _inject_liveness_probe(doc: dict, path: str) -> None:
-    """Inject an HTTP liveness probe into Deployment containers."""
+def _inject_liveness_probe(
+    doc: dict, path: str, port: int | str = 8080, scheme: str | None = None
+) -> None:
+    """Inject an HTTP or HTTPS liveness probe into Deployment containers."""
     if doc.get("kind") != "Deployment":
         return
 
     pod_spec = (
         doc.setdefault("spec", {}).setdefault("template", {}).setdefault("spec", {})
     )
+    http_get: dict[str, object] = {"path": path, "port": port}
+    if scheme is not None:
+        http_get["scheme"] = scheme
     for container in pod_spec.get("containers", []):
         container.setdefault(
             "livenessProbe",
-            {"httpGet": {"path": path, "port": 8080}},
+            {"httpGet": http_get},
         )
 
 
@@ -545,6 +550,7 @@ def generate_website(
     context: dict[str, Any] = {
         "name": config.name,
         "k8s_name": _make_k8s_name(config.name),
+        "namespace": config.namespace,
         "replicas": config.replicas,
     }
     if images:
@@ -627,7 +633,12 @@ def generate_website(
 
     liveness_probe_path = "/" if config.hugo_repo else "/healthz"
     for doc in docs:
-        _inject_liveness_probe(doc, liveness_probe_path)
+        _inject_liveness_probe(
+            doc,
+            liveness_probe_path,
+            port="https" if config.hugo_repo else 8080,
+            scheme="HTTPS" if config.hugo_repo else None,
+        )
 
     if config.env:
         for doc in docs:

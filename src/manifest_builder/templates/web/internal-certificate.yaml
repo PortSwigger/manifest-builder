@@ -1,0 +1,23 @@
+{{#git_repo}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{k8s_name}}-internal
+spec:
+  dnsNames:
+    - {{k8s_name}}.{{namespace}}.svc
+  duration: 2160h
+  issuerRef:
+    name: cluster-local
+    kind: ClusterIssuer
+    group: cert-manager.io
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  renewBefore: 360h
+  secretName: {{k8s_name}}-internal-tls
+  usages:
+    - digital signature
+    - server auth
+{{/git_repo}}
