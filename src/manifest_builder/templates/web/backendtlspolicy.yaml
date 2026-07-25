@@ -1,0 +1,18 @@
+{{#git_repo}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: {{k8s_name}}
+spec:
+  targetRefs:
+    - group: ""
+      kind: Service
+      name: {{k8s_name}}
+      sectionName: https
+  validation:
+    caCertificateRefs:
+      - group: ""
+        kind: ConfigMap
+        name: cluster-local-ca
+    hostname: {{k8s_name}}.{{namespace}}.svc
+{{/git_repo}}

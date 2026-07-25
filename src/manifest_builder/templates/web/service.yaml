@@ -6,6 +6,15 @@ spec:
   selector:
     app: {{k8s_name}}
   ports:
+{{#git_repo}}
+    - name: https
+      appProtocol: https
+      protocol: TCP
+      port: 443
+      targetPort: https
+{{/git_repo}}
+{{^git_repo}}
     - protocol: TCP
       port: 80
       targetPort: 8080
+{{/git_repo}}
