@@ -136,6 +136,51 @@ data:
     assert get_git_manifest_changes(output) == GitManifestChanges()
 
 
+def test_generate_ignores_deploy_id_changes_with_null_annotations(
+    tmp_path: Path,
+) -> None:
+    """A null annotations field is equivalent to no annotations."""
+    output = tmp_path / "output"
+    output.mkdir()
+    init_test_repo(output)
+    manifest = output / "loki" / "service-loki.yaml"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: loki
+  annotations:
+    noa.re/deploy-id: old-deploy-id
+spec:
+  type: ClusterIP
+"""
+    )
+    _commit_all(output, b"generated manifests")
+    manifest.write_text(
+        """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: loki
+  annotations: null
+spec:
+  type: ClusterIP
+"""
+    )
+    config_commit = "a" * 40
+
+    result = _collect_generation_result(output, {manifest}, config_commit, {"loki"})
+
+    assert result.deploy_id == _make_deploy_id(__version__, config_commit)
+    assert result.created_or_modified == set()
+    assert result.removed == set()
+    assert get_git_manifest_changes(output) == GitManifestChanges()
+
+
 def test_generate_restores_deploy_id_only_changes_without_config_commit(
     tmp_path: Path,
 ) -> None:

@@ -320,6 +320,9 @@ def _without_deploy_id(documents: list[Any]) -> list[Any]:
         if not isinstance(metadata, dict):
             continue
         annotations = metadata.get("annotations")
+        if annotations is None:
+            metadata.pop("annotations", None)
+            continue
         if not isinstance(annotations, dict):
             continue
         annotations.pop(DEPLOY_ID_ANNOTATION, None)
