@@ -167,6 +167,39 @@ def test_generate_manifests_with_website_config(tmp_path: Path) -> None:
     assert any("zq-lu" in str(f) for f in generated_files)
 
 
+def test_generate_website_creates_client_traffic_policy_for_gateway(
+    tmp_path: Path,
+) -> None:
+    """Each website Gateway should have a same-named modern TLS policy."""
+    config = WebsiteConfig(name="zq.lu", namespace="web")
+
+    paths = generate_website(config, tmp_path / "output")
+
+    policy_path = next(
+        path for path in paths if path.name == "clienttrafficpolicy-zq-lu.yaml"
+    )
+    policy = yaml.safe_load(policy_path.read_text())
+    assert policy == {
+        "apiVersion": "gateway.envoyproxy.io/v1alpha1",
+        "kind": "ClientTrafficPolicy",
+        "metadata": {"name": "zq-lu", "namespace": "web"},
+        "spec": {
+            "http3": {},
+            "targetRefs": [
+                {
+                    "group": "gateway.networking.k8s.io",
+                    "kind": "Gateway",
+                    "name": "zq-lu",
+                }
+            ],
+            "tls": {
+                "ecdhCurves": ["X25519MLKEM768", "X25519", "P-256"],
+                "minVersion": "1.3",
+            },
+        },
+    }
+
+
 def test_generate_manifests_removes_stale_website_files(tmp_path: Path) -> None:
     """Stale files from previous runs are removed after generating website manifests."""
     output_dir = tmp_path / "output"
