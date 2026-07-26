@@ -1,0 +1,16 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: {{k8s_name}}
+spec:
+  http3: {}
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{k8s_name}}
+  tls:
+    ecdhCurves:
+      - X25519MLKEM768
+      - X25519
+      - P-256
+    minVersion: "1.3"
