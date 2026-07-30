@@ -173,6 +173,89 @@ def test_generate_simple_writes_serviceaccount_when_iam_role_is_specified(
     assert deployment["spec"]["template"]["spec"]["serviceAccountName"] == "idcat"
 
 
+def test_generate_simple_writes_serviceaccount_annotations(
+    tmp_path: Path,
+) -> None:
+    """service_account_annotations create a ServiceAccount with those annotations."""
+    config = SimpleConfig(
+        name="idcat",
+        namespace="idcat",
+        image="registry.example.com/idcat:1.0",
+        service_account_annotations={
+            "example.com/owner": "platform",
+            "example.com/team": "{{team}}",
+        },
+        variables={"team": "berries"},
+    )
+
+    paths = generate_simple(config, tmp_path / "output")
+
+    assert {path.name for path in paths} == {
+        "deployment-idcat.yaml",
+        "service-idcat.yaml",
+        "serviceaccount-idcat.yaml",
+    }
+
+    serviceaccount = _read_yaml(
+        tmp_path / "output" / "idcat" / "serviceaccount-idcat.yaml"
+    )
+    assert serviceaccount["kind"] == "ServiceAccount"
+    assert serviceaccount["metadata"]["name"] == "idcat"
+    assert serviceaccount["metadata"]["namespace"] == "idcat"
+    assert serviceaccount["metadata"]["annotations"] == {
+        "example.com/owner": "platform",
+        "example.com/team": "berries",
+    }
+
+    deployment = _read_yaml(tmp_path / "output" / "idcat" / "deployment-idcat.yaml")
+    assert deployment["spec"]["template"]["spec"]["serviceAccountName"] == "idcat"
+
+
+def test_generate_simple_combines_iam_role_and_serviceaccount_annotations(
+    tmp_path: Path,
+) -> None:
+    """iam_role and service_account_annotations merge into one annotations block."""
+    config = SimpleConfig(
+        name="idcat",
+        namespace="idcat",
+        image="registry.example.com/idcat:1.0",
+        iam_role="arn:aws:iam::123456789012:role/berries-idcat",
+        service_account_annotations={"example.com/owner": "platform"},
+    )
+
+    generate_simple(config, tmp_path / "output")
+
+    serviceaccount = _read_yaml(
+        tmp_path / "output" / "idcat" / "serviceaccount-idcat.yaml"
+    )
+    assert serviceaccount["metadata"]["annotations"] == {
+        "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/berries-idcat",
+        "example.com/owner": "platform",
+    }
+
+
+def test_generate_simple_serviceaccount_annotation_values_are_quoted(
+    tmp_path: Path,
+) -> None:
+    """Annotation values that look like non-strings stay strings in the output."""
+    config = SimpleConfig(
+        name="idcat",
+        namespace="idcat",
+        image="registry.example.com/idcat:1.0",
+        service_account_annotations={"example.com/enabled": "true"},
+    )
+
+    generate_simple(config, tmp_path / "output")
+
+    serviceaccount = _read_yaml(
+        tmp_path / "output" / "idcat" / "serviceaccount-idcat.yaml"
+    )
+    assert serviceaccount["metadata"]["annotations"] == {"example.com/enabled": "true"}
+    assert isinstance(
+        serviceaccount["metadata"]["annotations"]["example.com/enabled"], str
+    )
+
+
 def test_generate_simple_writes_rolebinding_when_k8s_role_is_specified(
     tmp_path: Path,
 ) -> None:

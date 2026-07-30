@@ -767,6 +767,85 @@ def test_load_simple_config_with_k8s_role(tmp_path: Path) -> None:
     assert config.k8s_role == "idcat-reader"
 
 
+def test_load_simple_config_with_service_account_annotations(tmp_path: Path) -> None:
+    """Simple config can specify a table of ServiceAccount annotations."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+
+        [simple.service-account-annotations]
+        "example.com/owner" = "platform"
+        "example.com/team" = "berries"
+        """,
+    )
+
+    configs = load_test_configs(conf)
+    config = only_config(configs)
+    assert isinstance(config, SimpleConfig)
+    assert config.service_account_annotations == {
+        "example.com/owner": "platform",
+        "example.com/team": "berries",
+    }
+
+
+def test_load_simple_config_service_account_annotations_must_be_strings(
+    tmp_path: Path,
+) -> None:
+    """Non-string annotation values are rejected."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+
+        [simple.service-account-annotations]
+        "example.com/replicas" = 3
+        """,
+    )
+
+    with pytest.raises(
+        ValueError, match=r"'service-account-annotations' must be a table"
+    ):
+        load_test_configs(conf)
+
+
+def test_load_simple_config_rejects_role_arn_annotation_with_iam_role(
+    tmp_path: Path,
+) -> None:
+    """Setting the role-arn annotation and iam-role together fails clearly."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        iam-role = "arn:aws:iam::123456789012:role/berries-idcat"
+
+        [simple.service-account-annotations]
+        "eks.amazonaws.com/role-arn" = "arn:aws:iam::123456789012:role/other"
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"cannot set 'eks\.amazonaws\.com/role-arn' when 'iam-role'",
+    ):
+        load_test_configs(conf)
+
+
 def test_load_simple_config_with_arch(tmp_path: Path) -> None:
     """Simple config can declare a node architecture for the Pod nodeSelector."""
     conf = tmp_path / "conf"
