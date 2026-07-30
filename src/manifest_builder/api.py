@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import shutil
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -16,6 +15,7 @@ from manifest_builder.config import (
     load_extra_variables,
     load_images,
     load_owned_namespaces,
+    load_toml_file,
     resolve_configs,
 )
 from manifest_builder.copy import CopyConfigHandler
@@ -448,7 +448,7 @@ def _load_system_owner_roots(output: Path) -> set[str]:
     if not owner_path.exists():
         return set()
 
-    data = tomllib.loads(owner_path.read_text())
+    data = load_toml_file(owner_path)
     owned = data.get("owned", [])
     if isinstance(owned, str):
         owned = [owned]
