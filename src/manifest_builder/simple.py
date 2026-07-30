@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: The manifest-builder contributors
 """Simple manifest generation from bundled Mustache templates."""
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,9 @@ from manifest_builder.website import (
     _inject_custom_token_projection,
     _make_configmaps,
 )
+
+# Annotation the ServiceAccount template emits for 'iam-role' (EKS IRSA).
+IAM_ROLE_ANNOTATION = "eks.amazonaws.com/role-arn"
 
 
 class SimpleConfigHandler(ConfigHandler):
@@ -149,6 +153,7 @@ def _parse_simple_config(
             "args",
             "iam-role",
             "k8s-role",
+            "service-account-annotations",
             "config",
             "custom-token-audiences",
             "extra-resources",
@@ -179,6 +184,29 @@ def _parse_simple_config(
     if k8s_role is not None and not isinstance(k8s_role, str):
         raise ValueError(f"'k8s-role' must be a string in {source_file}")
 
+    service_account_annotations = data.get("service-account-annotations")
+    if service_account_annotations is not None and (
+        not isinstance(service_account_annotations, dict)
+        or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in service_account_annotations.items()
+        )
+    ):
+        raise ValueError(
+            f"'service-account-annotations' must be a table mapping strings to "
+            f"strings in {source_file}"
+        )
+
+    if (
+        iam_role is not None
+        and service_account_annotations is not None
+        and IAM_ROLE_ANNOTATION in service_account_annotations
+    ):
+        raise ValueError(
+            f"'service-account-annotations' cannot set '{IAM_ROLE_ANNOTATION}' when "
+            f"'iam-role' is also specified in {source_file}; use one or the other"
+        )
+
     arch = data.get("arch")
     if arch is not None and not isinstance(arch, str):
         raise ValueError(f"'arch' must be a string in {source_file}")
@@ -208,6 +236,7 @@ def _parse_simple_config(
         args=data.get("args"),
         iam_role=iam_role,
         k8s_role=k8s_role,
+        service_account_annotations=service_account_annotations,
         config=_parse_config_files(data.get("config"), source_file),
         custom_token_audiences=custom_token_audiences,
         variables=variables.copy(),
@@ -362,16 +391,20 @@ def generate_simple(
         context["args"] = config.args
     if config.arch:
         context["arch"] = config.arch
-    if config.iam_role or config.k8s_role:
+    if config.iam_role or config.k8s_role or config.service_account_annotations:
         context["service_account"] = True
+    renderer = pystache.Renderer(missing_tags=MissingTags.strict)
     if config.iam_role:
-        context["iam_role"] = pystache.Renderer(missing_tags=MissingTags.strict).render(
-            config.iam_role, context
-        )
+        context["iam_role"] = renderer.render(config.iam_role, context)
     if config.k8s_role:
-        context["k8s_role"] = pystache.Renderer(missing_tags=MissingTags.strict).render(
-            config.k8s_role, context
-        )
+        context["k8s_role"] = renderer.render(config.k8s_role, context)
+    if config.iam_role or config.service_account_annotations:
+        context["service_account_has_annotations"] = True
+    if config.service_account_annotations:
+        context["service_account_annotations"] = [
+            {"key": key, "value": json.dumps(renderer.render(value, context))}
+            for key, value in config.service_account_annotations.items()
+        ]
 
     docs: list[dict] = []
     for template_file in sorted(templates_dir.glob("*.yaml")):

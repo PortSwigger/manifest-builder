@@ -180,6 +180,9 @@ class SimpleConfig:
     args: str | list[str] | None = None
     iam_role: str | None = None
     k8s_role: str | None = None
+    service_account_annotations: dict[str, str] | None = (
+        None  # extra annotations for the managed ServiceAccount
+    )
     config: dict[str, Path] | None = None  # container path -> resolved local path
     custom_token_audiences: list[str] | None = None
     variables: dict[str, TemplateValue] = field(default_factory=dict)
