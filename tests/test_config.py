@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: The manifest-builder contributors
 """Tests for configuration parsing and validation."""
 
+import re
 import textwrap
 from collections.abc import Sequence
 from pathlib import Path
@@ -489,6 +490,31 @@ def test_load_configs_missing_config_toml(tmp_path: Path) -> None:
     conf.mkdir()
     with pytest.raises(FileNotFoundError, match="Configuration file not found"):
         load_test_configs(conf)
+
+
+def test_load_configs_invalid_toml_names_the_file(tmp_path: Path) -> None:
+    """A syntax error in the top-level config names the offending file."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    config_file = conf / "config.toml"
+    # Unterminated string on the value.
+    config_file.write_text('[variables]\nfoo = "unterminated\n')
+
+    with pytest.raises(
+        ValueError, match=rf"Failed to parse TOML file {re.escape(str(config_file))}"
+    ):
+        load_test_configs(conf)
+
+
+def test_load_extra_variables_invalid_toml_names_the_file(tmp_path: Path) -> None:
+    """A syntax error in a --vars-from file names the offending file."""
+    vars_file = tmp_path / "vars.toml"
+    vars_file.write_text('foo = "unterminated\n')
+
+    with pytest.raises(
+        ValueError, match=rf"Failed to parse TOML file {re.escape(str(vars_file))}"
+    ):
+        load_extra_variables(vars_file)
 
 
 def test_load_configs_accepts_manifest_builder_toml(tmp_path: Path) -> None:

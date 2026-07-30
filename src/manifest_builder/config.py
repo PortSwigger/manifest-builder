@@ -19,6 +19,15 @@ DEFAULT_REPLICA_COUNT = 2
 TemplateValue = str | int | float | bool
 
 
+def load_toml_file(path: Path) -> dict:
+    """Parse a TOML file, reporting the file name on a syntax error."""
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"Failed to parse TOML file {path}: {e}") from e
+
+
 def validate_known_fields(
     table_name: str,
     data: dict,
@@ -261,7 +270,7 @@ def load_images(config_dir: Path) -> dict[str, str]:
     if not images_file.exists():
         return {}
 
-    data = tomllib.loads(images_file.read_text())
+    data = load_toml_file(images_file)
 
     if not data:
         raise ValueError(f"images.toml is empty in {config_dir}")
@@ -302,7 +311,7 @@ def load_owned_namespaces(
     for toml_file in sorted(owners_dir.glob("*.toml")):
         if toml_file.name in excluded:
             continue
-        data = tomllib.loads(toml_file.read_text())
+        data = load_toml_file(toml_file)
 
         owner_roots = data.get("owned")
         if owner_roots is None:
@@ -340,7 +349,7 @@ def load_extra_variables(path: Path) -> dict[str, TemplateValue]:
     if not path.exists():
         raise FileNotFoundError(f"Variables file not found: {path}")
 
-    data = tomllib.loads(path.read_text())
+    data = load_toml_file(path)
 
     variables: dict[str, TemplateValue] = {}
     for key, value in data.items():
@@ -402,8 +411,7 @@ def load_configs(
         expected = " or ".join(str(config_dir / name) for name in CONFIG_FILE_NAMES)
         raise FileNotFoundError(f"Configuration file not found: {expected}")
 
-    with open(toml_file, "rb") as f:
-        data = tomllib.load(f)
+    data = load_toml_file(toml_file)
 
     if extra_variables:
         existing = data.get("variables", {})
