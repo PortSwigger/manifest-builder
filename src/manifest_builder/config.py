@@ -193,6 +193,9 @@ class SimpleConfig:
         None  # extra annotations for the managed ServiceAccount
     )
     config: dict[str, Path] | None = None  # container path -> resolved local path
+    external_secrets: list[str] | None = (
+        None  # mount paths for external secrets (e.g., ["/email-password"])
+    )
     custom_token_audiences: list[str] | None = None
     variables: dict[str, TemplateValue] = field(default_factory=dict)
     extra_resources: Path | None = (

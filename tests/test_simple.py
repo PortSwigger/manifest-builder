@@ -420,6 +420,45 @@ def test_generate_simple_custom_token_audiences_inject_projected_tokens(
     ]
 
 
+def test_generate_simple_external_secrets_injects_volumes_and_mounts(
+    tmp_path: Path,
+) -> None:
+    """External secrets are mounted as Secret volumes named after the mount path."""
+    config = SimpleConfig(
+        name="idcat",
+        namespace="idcat",
+        image="registry.example.com/idcat:1.0",
+        external_secrets=["/email-password", "/db/credentials"],
+    )
+
+    generate_simple(config, tmp_path / "output")
+
+    deployment = _read_yaml(tmp_path / "output" / "idcat" / "deployment-idcat.yaml")
+    pod_spec = deployment["spec"]["template"]["spec"]
+    assert pod_spec["containers"][0]["volumeMounts"] == [
+        {"name": "email-password", "mountPath": "/email-password"},
+        {"name": "db-credentials", "mountPath": "/db/credentials"},
+    ]
+    assert pod_spec["volumes"] == [
+        {"name": "email-password", "secret": {"secretName": "email-password"}},
+        {"name": "db-credentials", "secret": {"secretName": "db-credentials"}},
+    ]
+
+
+def test_generate_simple_omits_external_secrets_when_unset(tmp_path: Path) -> None:
+    """Without external secrets, no Secret volumes are produced."""
+    config = SimpleConfig(
+        name="idcat",
+        namespace="idcat",
+        image="registry.example.com/idcat:1.0",
+    )
+
+    generate_simple(config, tmp_path / "output")
+
+    deployment = _read_yaml(tmp_path / "output" / "idcat" / "deployment-idcat.yaml")
+    assert "volumes" not in deployment["spec"]["template"]["spec"]
+
+
 def test_generate_simple_random_secret_emits_manifest_and_mount(
     tmp_path: Path,
 ) -> None:
