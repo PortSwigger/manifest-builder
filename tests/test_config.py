@@ -956,6 +956,70 @@ def test_load_simple_config_arch_must_be_string(tmp_path: Path) -> None:
         load_test_configs(conf)
 
 
+def test_load_simple_config_with_external_secrets(tmp_path: Path) -> None:
+    """An external-secrets list is preserved in order."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        external-secrets = ["/email-password", "/db/credentials"]
+        """,
+    )
+
+    configs = load_test_configs(conf)
+    config = only_config(configs)
+    assert isinstance(config, SimpleConfig)
+    assert config.external_secrets == ["/email-password", "/db/credentials"]
+
+
+def test_load_simple_config_with_external_secrets_string(tmp_path: Path) -> None:
+    """A single external secret is normalized into a one-element list."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        external-secrets = "/api-key"
+        """,
+    )
+
+    configs = load_test_configs(conf)
+    config = only_config(configs)
+    assert isinstance(config, SimpleConfig)
+    assert config.external_secrets == ["/api-key"]
+
+
+def test_load_simple_config_external_secrets_must_be_strings(tmp_path: Path) -> None:
+    """external-secrets must be a string or list of strings."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        external-secrets = [1]
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="'external-secrets' must be a string or list of strings",
+    ):
+        load_test_configs(conf)
+
+
 def test_load_simple_config_with_random_secret(tmp_path: Path) -> None:
     """A single random-secret is normalized into a one-element list."""
     conf = tmp_path / "conf"

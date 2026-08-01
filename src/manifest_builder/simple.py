@@ -29,6 +29,7 @@ from manifest_builder.website import (
     _configmap_suffix_from_mount_path,
     _inject_custom_token_projection,
     _make_configmaps,
+    _secret_name_from_mount_path,
 )
 
 # Annotation the ServiceAccount template emits for 'iam-role' (EKS IRSA).
@@ -155,6 +156,7 @@ def _parse_simple_config(
             "k8s-role",
             "service-account-annotations",
             "config",
+            "external-secrets",
             "custom-token-audiences",
             "extra-resources",
             "replicas",
@@ -220,6 +222,10 @@ def _parse_simple_config(
             f"'custom-token-audiences' must be a list of strings in {source_file}"
         )
 
+    external_secrets = _parse_external_secrets(
+        data.get("external-secrets"), source_file
+    )
+
     random_secrets = _parse_random_secrets(data, source_file)
 
     namespace = data.get("namespace", default_namespace)
@@ -238,6 +244,7 @@ def _parse_simple_config(
         k8s_role=k8s_role,
         service_account_annotations=service_account_annotations,
         config=_parse_config_files(data.get("config"), source_file),
+        external_secrets=external_secrets,
         custom_token_audiences=custom_token_audiences,
         variables=variables.copy(),
         extra_resources=extra_resources,
@@ -245,6 +252,33 @@ def _parse_simple_config(
         arch=arch,
         random_secrets=random_secrets,
     )
+
+
+def _parse_external_secrets(data: object, source_file: Path) -> list[str] | None:
+    """Normalize the 'external-secrets' field into a list of mount paths.
+
+    A single mount path may be given as a bare string.
+    """
+    if data is None:
+        return None
+
+    if isinstance(data, str):
+        return [data]
+
+    if not isinstance(data, list):
+        raise ValueError(
+            f"'external-secrets' must be a string or list of strings in {source_file}"
+        )
+
+    mount_paths: list[str] = []
+    for mount_path in data:
+        if not isinstance(mount_path, str):
+            raise ValueError(
+                f"'external-secrets' must be a string or list of strings in "
+                f"{source_file}"
+            )
+        mount_paths.append(mount_path)
+    return mount_paths
 
 
 def _parse_random_secrets(data: dict, source_file: Path) -> list[str] | None:
@@ -314,6 +348,35 @@ def _inject_configmaps(
                 )
             pod_spec.setdefault("volumes", []).append(
                 {"name": cm_name, "configMap": {"name": cm_name}}
+            )
+
+
+def _inject_external_secrets(docs: list[dict], config: SimpleConfig) -> None:
+    """Mount externally managed Secrets at the configured paths.
+
+    Each mount path names the Secret it mounts, so ``/email-password`` mounts the
+    Secret ``email-password`` and ``/db/credentials`` mounts ``db-credentials``.
+    """
+    if not config.external_secrets:
+        return
+
+    for mount_path in config.external_secrets:
+        secret_name = _secret_name_from_mount_path(mount_path)
+        for doc in docs:
+            if doc.get("kind") != "Deployment":
+                continue
+
+            pod_spec = (
+                doc.setdefault("spec", {})
+                .setdefault("template", {})
+                .setdefault("spec", {})
+            )
+            for container in pod_spec.get("containers", []):
+                container.setdefault("volumeMounts", []).append(
+                    {"name": secret_name, "mountPath": mount_path}
+                )
+            pod_spec.setdefault("volumes", []).append(
+                {"name": secret_name, "secret": {"secretName": secret_name}}
             )
 
 
@@ -436,6 +499,8 @@ def generate_simple(
 
     k8s_name = _make_k8s_name(config.name)
     _inject_configmaps(docs, config, k8s_name, context)
+
+    _inject_external_secrets(docs, config)
 
     if config.random_secrets:
         _inject_random_secrets(docs, config, k8s_name)
