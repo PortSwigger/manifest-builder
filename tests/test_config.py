@@ -150,6 +150,28 @@ def test_values_resolved_relative_to_custom_config_dir(tmp_path: Path) -> None:
     assert config_a.values != config_b.values
 
 
+def test_values_single_string_treated_as_list(tmp_path: Path) -> None:
+    """A bare string for 'values' is treated as a single-element list."""
+    conf_dir = tmp_path / "conf"
+    conf_dir.mkdir()
+    write_toml(
+        conf_dir,
+        "config.toml",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        values = "myapp/values.yaml"
+        """,
+    )
+
+    configs = load_test_configs(conf_dir)
+    config = only_config(configs)
+    assert isinstance(config, ChartConfig)
+    assert config.values == [conf_dir / "myapp/values.yaml"]
+
+
 def test_values_empty_when_not_specified(tmp_path: Path) -> None:
     conf_dir = tmp_path / "conf"
     conf_dir.mkdir()
