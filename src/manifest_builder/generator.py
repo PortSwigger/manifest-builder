@@ -211,7 +211,10 @@ def _parse_chart_config(
 
     config_dir = source_file.parent
     namespace = data.get("namespace", default_namespace)
-    values = [config_dir / v for v in data.get("values", [])]
+    raw_values = data.get("values", [])
+    if isinstance(raw_values, str):
+        raw_values = [raw_values]
+    values = [config_dir / v for v in raw_values]
 
     extra_resources = None
     if "extra-resources" in data:
