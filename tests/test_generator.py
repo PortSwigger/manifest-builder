@@ -4,6 +4,8 @@
 
 import logging
 from pathlib import Path
+from threading import Barrier, Lock
+from time import sleep
 from unittest import mock
 
 import pytest
@@ -204,6 +206,65 @@ def test_generate_manifests_summarizes_chart_cache(
         )
 
     assert "Chart cache: 1 hit, 0 misses" in caplog.text
+
+
+def test_generate_manifests_renders_helm_configs_concurrently(tmp_path: Path) -> None:
+    """Helm renders should overlap without racing chart cache access."""
+    chart_dir = tmp_path / "chart"
+    chart_dir.mkdir()
+    configs = [
+        ChartConfig(
+            name=name,
+            namespace="default",
+            chart="chart",
+            repo="https://charts.example.com",
+            version=None,
+            values=[],
+            release=None,
+        )
+        for name in ("first", "second")
+    ]
+    render_barrier = Barrier(len(configs))
+    counter_lock = Lock()
+    active_pulls = 0
+    max_active_pulls = 0
+
+    def pull(**kwargs: object) -> Path:
+        nonlocal active_pulls, max_active_pulls
+        with counter_lock:
+            active_pulls += 1
+            max_active_pulls = max(max_active_pulls, active_pulls)
+        sleep(0.02)
+        with counter_lock:
+            active_pulls -= 1
+        return chart_dir
+
+    def render(**kwargs: object) -> str:
+        render_barrier.wait(timeout=5)
+        release_name = kwargs["release_name"]
+        return f"""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {release_name}
+data: {{}}
+"""
+
+    with (
+        mock.patch("manifest_builder.generator.pull_chart", side_effect=pull),
+        mock.patch("manifest_builder.generator.run_helm_template", side_effect=render),
+    ):
+        written = generate_manifests(
+            [HelmConfigHandler(configs)],
+            tmp_path / "out",
+            repo_root=tmp_path,
+        )
+
+    assert {path.name for path in written} >= {
+        "configmap-first.yaml",
+        "configmap-second.yaml",
+    }
+    assert max_active_pulls == 1
 
 
 def test_generate_manifests_rejects_config_in_owned_namespace(tmp_path: Path) -> None:
