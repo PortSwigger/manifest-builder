@@ -156,6 +156,7 @@ def _parse_simple_config(
             "k8s-role",
             "service-account-annotations",
             "config",
+            "external-secret",
             "external-secrets",
             "custom-token-audiences",
             "extra-resources",
@@ -213,6 +214,12 @@ def _parse_simple_config(
     if arch is not None and not isinstance(arch, str):
         raise ValueError(f"'arch' must be a string in {source_file}")
 
+    args = data.get("args")
+    if args is not None and (
+        not isinstance(args, list) or not all(isinstance(arg, str) for arg in args)
+    ):
+        raise ValueError(f"'args' must be a list of strings in {source_file}")
+
     custom_token_audiences = data.get("custom-token-audiences")
     if custom_token_audiences is not None and (
         not isinstance(custom_token_audiences, list)
@@ -222,9 +229,7 @@ def _parse_simple_config(
             f"'custom-token-audiences' must be a list of strings in {source_file}"
         )
 
-    external_secrets = _parse_external_secrets(
-        data.get("external-secrets"), source_file
-    )
+    external_secrets = _parse_external_secrets(data, source_file)
 
     random_secrets = _parse_random_secrets(data, source_file)
 
@@ -239,7 +244,7 @@ def _parse_simple_config(
         name=name,
         namespace=namespace,
         image=image,
-        args=data.get("args"),
+        args=args,
         iam_role=iam_role,
         k8s_role=k8s_role,
         service_account_annotations=service_account_annotations,
@@ -254,24 +259,38 @@ def _parse_simple_config(
     )
 
 
-def _parse_external_secrets(data: object, source_file: Path) -> list[str] | None:
-    """Normalize the 'external-secrets' field into a list of mount paths.
+def _parse_external_secrets(data: dict, source_file: Path) -> list[str] | None:
+    """Normalize singular and plural external secret fields into mount paths.
 
-    A single mount path may be given as a bare string.
+    A single mount path may also be given as a bare plural-field string for
+    backwards compatibility.
     """
-    if data is None:
+    external_secret = data.get("external-secret")
+    external_secrets = data.get("external-secrets")
+
+    if external_secret is not None and external_secrets is not None:
+        raise ValueError(
+            f"Cannot specify both 'external-secret' and 'external-secrets' in {source_file}"
+        )
+
+    if external_secret is not None:
+        if not isinstance(external_secret, str):
+            raise ValueError(f"'external-secret' must be a string in {source_file}")
+        return [external_secret]
+
+    if external_secrets is None:
         return None
 
-    if isinstance(data, str):
-        return [data]
+    if isinstance(external_secrets, str):
+        return [external_secrets]
 
-    if not isinstance(data, list):
+    if not isinstance(external_secrets, list):
         raise ValueError(
             f"'external-secrets' must be a string or list of strings in {source_file}"
         )
 
     mount_paths: list[str] = []
-    for mount_path in data:
+    for mount_path in external_secrets:
         if not isinstance(mount_path, str):
             raise ValueError(
                 f"'external-secrets' must be a string or list of strings in "
@@ -452,6 +471,9 @@ def generate_simple(
     context["image"] = config.image
     if config.args:
         context["args"] = config.args
+        context["container_args"] = {
+            "items": [{"yaml": json.dumps(arg)} for arg in config.args]
+        }
     if config.arch:
         context["arch"] = config.arch
     if config.iam_role or config.k8s_role or config.service_account_annotations:

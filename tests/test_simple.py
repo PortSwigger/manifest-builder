@@ -40,6 +40,7 @@ def test_generate_simple_writes_deployment_from_bundled_template(
     container = deployment["spec"]["template"]["spec"]["containers"][0]
     assert container["image"] == "registry.example.com/idcat:1.0"
     assert container["ports"] == [{"name": "http", "containerPort": 8080}]
+    assert "args" not in container
 
     service = _read_yaml(tmp_path / "output" / "idcat" / "service-idcat.yaml")
     assert service["kind"] == "Service"
@@ -50,6 +51,22 @@ def test_generate_simple_writes_deployment_from_bundled_template(
     assert service["spec"]["ports"] == [
         {"name": "http", "port": 80, "targetPort": "http"}
     ]
+
+
+def test_generate_simple_propagates_args_to_deployment(tmp_path: Path) -> None:
+    """Configured args are preserved as strings in the container spec."""
+    config = SimpleConfig(
+        name="idcat",
+        namespace="idcat",
+        image="registry.example.com/idcat:1.0",
+        args=["serve", "--port=8080", "true", "key: value"],
+    )
+
+    generate_simple(config, tmp_path / "output")
+
+    deployment = _read_yaml(tmp_path / "output" / "idcat" / "deployment-idcat.yaml")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["args"] == ["serve", "--port=8080", "true", "key: value"]
 
 
 def test_generate_simple_writes_configmap_when_config_is_specified(

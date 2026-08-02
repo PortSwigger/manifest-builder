@@ -186,7 +186,7 @@ class SimpleConfig:
     name: str
     namespace: str
     image: str
-    args: str | list[str] | None = None
+    args: list[str] | None = None
     iam_role: str | None = None
     k8s_role: str | None = None
     service_account_annotations: dict[str, str] | None = (
