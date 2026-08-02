@@ -915,6 +915,46 @@ def test_load_simple_config_with_arch(tmp_path: Path) -> None:
     assert config.arch == "arm64"
 
 
+def test_load_simple_config_with_args(tmp_path: Path) -> None:
+    """Simple config accepts an ordered list of container arguments."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        args = ["serve", "--port=8080"]
+        """,
+    )
+
+    configs = load_test_configs(conf)
+    config = only_config(configs)
+    assert isinstance(config, SimpleConfig)
+    assert config.args == ["serve", "--port=8080"]
+
+
+def test_load_simple_config_args_must_be_list_of_strings(tmp_path: Path) -> None:
+    """Simple args reject scalar values instead of changing their meaning."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        args = "serve"
+        """,
+    )
+
+    with pytest.raises(ValueError, match="'args' must be a list of strings"):
+        load_test_configs(conf)
+
+
 def test_load_simple_config_with_custom_token_audiences(tmp_path: Path) -> None:
     """Simple config can specify custom audiences for projected tokens."""
     conf = tmp_path / "conf"
@@ -1018,6 +1058,71 @@ def test_load_simple_config_with_external_secrets_string(tmp_path: Path) -> None
     config = only_config(configs)
     assert isinstance(config, SimpleConfig)
     assert config.external_secrets == ["/api-key"]
+
+
+def test_load_simple_config_with_external_secret(tmp_path: Path) -> None:
+    """A singular external-secret is normalized to a one-element list."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        external-secret = "/api-key"
+        """,
+    )
+
+    configs = load_test_configs(conf)
+    config = only_config(configs)
+    assert isinstance(config, SimpleConfig)
+    assert config.external_secrets == ["/api-key"]
+
+
+def test_load_simple_config_rejects_both_external_secret_forms(
+    tmp_path: Path,
+) -> None:
+    """The singular and plural external secret fields are mutually exclusive."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        external-secret = "/api-key"
+        external-secrets = ["/email-password"]
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot specify both 'external-secret' and 'external-secrets'",
+    ):
+        load_test_configs(conf)
+
+
+def test_load_simple_config_external_secret_must_be_string(tmp_path: Path) -> None:
+    """The singular external-secret field only accepts a string."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[simple]]
+        namespace = "idcat"
+        image = "example.com/idcat:1.0"
+        external-secret = ["/api-key"]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="'external-secret' must be a string"):
+        load_test_configs(conf)
 
 
 def test_load_simple_config_external_secrets_must_be_strings(tmp_path: Path) -> None:

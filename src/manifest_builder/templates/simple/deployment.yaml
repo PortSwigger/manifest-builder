@@ -27,9 +27,9 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-{{#args}}
+{{#container_args}}
           args:
-{{#args}}
-            - {{.}}
-{{/args}}
-{{/args}}
+{{#items}}
+            - {{{yaml}}}
+{{/items}}
+{{/container_args}}
