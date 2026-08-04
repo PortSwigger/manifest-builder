@@ -6,10 +6,12 @@ import re
 import textwrap
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from manifest_builder.handlers import ConfigHandler
+from manifest_builder.discovery import discover_handlers
 from manifest_builder.config import (
     DEFAULT_REPLICA_COUNT,
     ManifestConfig,
@@ -22,7 +24,6 @@ from manifest_builder.config import (
 from manifest_builder.blocks.copy import CopyConfig, CopyConfigHandler
 from manifest_builder.blocks.helm import ChartConfig, HelmConfigHandler
 from manifest_builder.helmfile import Helmfile, HelmfileRelease, HelmfileRepository
-from manifest_builder.blocks.public_repo import PublicRepoConfigHandler
 from manifest_builder.blocks.simple import SimpleConfig, SimpleConfigHandler
 from manifest_builder.blocks.website import WebsiteConfig, WebsiteConfigHandler
 
@@ -46,20 +47,9 @@ def only_config(
     return config
 
 
-def config_handlers() -> list[
-    HelmConfigHandler
-    | WebsiteConfigHandler
-    | SimpleConfigHandler
-    | CopyConfigHandler
-    | PublicRepoConfigHandler
-]:
-    return [
-        HelmConfigHandler(),
-        WebsiteConfigHandler(),
-        SimpleConfigHandler(),
-        CopyConfigHandler(),
-        PublicRepoConfigHandler(),
-    ]
+def config_handlers() -> list[ConfigHandler[Any]]:
+    """The built-in handlers, found the same way a real run finds them."""
+    return discover_handlers()
 
 
 def load_test_configs(
