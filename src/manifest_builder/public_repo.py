@@ -11,7 +11,6 @@ import yaml
 from pystache.common import MissingTags
 
 from manifest_builder.config import (
-    ManifestConfig,
     PublicRepoConfig,
     TemplateValue,
     parse_variables,
@@ -22,7 +21,7 @@ from manifest_builder.k8s import CLUSTER_SCOPED_KINDS
 from manifest_builder.output import write_documents
 
 
-class PublicRepoConfigHandler(ConfigHandler):
+class PublicRepoConfigHandler(ConfigHandler[PublicRepoConfig]):
     """Generate manifests for public-repo configs."""
 
     def __init__(self, configs: Sequence[PublicRepoConfig] | None = None) -> None:
@@ -58,21 +57,14 @@ class PublicRepoConfigHandler(ConfigHandler):
     def iter_configs(self) -> list[PublicRepoConfig]:
         return self.configs
 
-    def validate(self, config: ManifestConfig, repo_root: Path) -> None:
-        if not isinstance(config, PublicRepoConfig):
-            raise TypeError(
-                f"PublicRepoConfigHandler cannot process {type(config).__name__}"
-            )
+    def validate(self, config: PublicRepoConfig, repo_root: Path) -> None:
+        """public-repo configs reference no local files."""
 
     def generate(
         self,
-        config: ManifestConfig,
+        config: PublicRepoConfig,
         context: GenerationContext,
     ) -> set[Path]:
-        if not isinstance(config, PublicRepoConfig):
-            raise TypeError(
-                f"PublicRepoConfigHandler cannot process {type(config).__name__}"
-            )
         return generate_public_repo(config, context.output_dir, images=context.images)
 
 

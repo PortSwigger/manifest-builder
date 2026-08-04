@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from manifest_builder.config import ManifestConfig
 from manifest_builder.helm import ChartCacheStats
 
 if TYPE_CHECKING:
-    from manifest_builder.config import ManifestConfig
     from manifest_builder.helmfile import Helmfile
 
 
@@ -27,8 +27,22 @@ class GenerationContext:
     cache_stats: ChartCacheStats | None = None
 
 
-class ConfigHandler(ABC):
-    """Base class for config-type-specific manifest generation."""
+class ConfigHandler[ConfigT: ManifestConfig](ABC):
+    """Base class for config-type-specific manifest generation.
+
+    Parameterized with the config dataclass the handler owns, so ``validate``
+    and ``generate`` receive that type directly:
+
+        class SimpleConfigHandler(ConfigHandler[SimpleConfig]):
+            ...
+    """
+
+    #: Whether generate() for one config is independent of this handler's
+    #: others. Set True to let the orchestrator render them concurrently.
+    parallel_safe: bool = False
+
+    #: Upper bound on concurrent generate() calls when parallel_safe is set.
+    max_workers: int = 8
 
     @abstractmethod
     def top_level_config_name(self) -> str:
@@ -46,20 +60,20 @@ class ConfigHandler(ABC):
         """Parse this handler's raw TOML subtree."""
 
     @abstractmethod
-    def iter_configs(self) -> Iterable["ManifestConfig"]:
+    def iter_configs(self) -> Iterable[ConfigT]:
         """Yield the parsed configs this handler is responsible for."""
 
     def resolve(self, helmfile: "Helmfile | None") -> None:
         """Resolve references after all handlers have parsed their configs."""
 
     @abstractmethod
-    def validate(self, config: "ManifestConfig", repo_root: Path) -> None:
+    def validate(self, config: ConfigT, repo_root: Path) -> None:
         """Validate a config before any manifests are generated."""
 
     @abstractmethod
     def generate(
         self,
-        config: "ManifestConfig",
+        config: ConfigT,
         context: GenerationContext,
     ) -> set[Path]:
         """Generate manifests for a config and return paths that were written."""
