@@ -9,8 +9,7 @@ import pystache.context
 import pytest
 import yaml
 
-from manifest_builder.blocks.copy import CopyConfig
-from manifest_builder.blocks.copy import generate_copy
+from manifest_builder.blocks.copy import CopyConfig, generate_copy
 
 
 def _make_config(

@@ -11,9 +11,7 @@ from manifest_builder.config import TemplateValue
 from manifest_builder.result import GenerationResult, KubernetesObjectRef
 
 try:
-    __version__ = str(
-        getattr(import_module("manifest_builder._version"), "__version__")
-    )
+    __version__ = str(import_module("manifest_builder._version").__version__)
 except ModuleNotFoundError:
     try:
         __version__ = version("manifest-builder")

@@ -6,12 +6,11 @@ import logging
 from pathlib import Path
 from typing import cast
 
+import pytest
+from conftest import init_test_repo
 from dulwich import porcelain
 from dulwich.objects import Commit
 from dulwich.repo import Repo
-import pytest
-
-from conftest import init_test_repo
 
 from manifest_builder.git_utils import (
     create_manifest_commit,

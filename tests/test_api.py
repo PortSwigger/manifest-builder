@@ -6,11 +6,10 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import call
 
-from dulwich import porcelain
 import pytest
 import yaml
-
 from conftest import init_test_repo
+from dulwich import porcelain
 
 from manifest_builder import GenerationResult, __version__, generate
 from manifest_builder.api import (
@@ -19,6 +18,8 @@ from manifest_builder.api import (
     _load_api_variables,
     _load_system_owner_roots,
     _make_deploy_id,
+)
+from manifest_builder.api import (
     generate as api_generate,
 )
 from manifest_builder.git_utils import GitManifestChanges, get_git_manifest_changes

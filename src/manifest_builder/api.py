@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from manifest_builder import __version__
-from manifest_builder.discovery import discover_handlers
 from manifest_builder.config import (
     TemplateValue,
     load_configs,
@@ -19,6 +18,7 @@ from manifest_builder.config import (
     load_toml_file,
     resolve_configs,
 )
+from manifest_builder.discovery import discover_handlers
 from manifest_builder.generator import generate_manifests, plural
 from manifest_builder.git_utils import (
     GitManifestChanges,
@@ -73,8 +73,8 @@ def generate(
             ``output/owners/<namespace>.toml``, and cluster-scoped output is
             rejected.
         image: Optional image override for namespace-owner mode. When set,
-            simple and website config entries use this image and must not also
-            set an ``image`` field in the config file.
+            config handlers that support image overrides use this image and may
+            reject an ``image`` field in the config file.
         vars: Optional extra template variables, merged into the ``[variables]``
             table from config.toml the same way as variables loaded with
             ``vars_from``.
