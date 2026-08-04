@@ -14,23 +14,21 @@ from manifest_builder.config import (
     ManifestConfig,
     SimpleConfig,
     TemplateValue,
+    parse_variables,
     validate_known_fields,
     validate_simple_config,
 )
-from manifest_builder.generator import (
-    CLUSTER_SCOPED_KINDS,
-    _make_k8s_name,
-    _parse_variables,
-    _write_documents,
-)
 from manifest_builder.handlers import ConfigHandler, GenerationContext
-from manifest_builder.website import (
-    _config_checksum,
-    _configmap_suffix_from_mount_path,
-    _inject_custom_token_projection,
-    _make_configmaps,
-    _secret_name_from_mount_path,
+from manifest_builder.k8s import (
+    CLUSTER_SCOPED_KINDS,
+    config_checksum,
+    configmap_suffix_from_mount_path,
+    inject_custom_token_projection,
+    make_configmaps,
+    make_k8s_name,
+    secret_name_from_mount_path,
 )
+from manifest_builder.output import write_documents
 
 # Annotation the ServiceAccount template emits for 'iam-role' (EKS IRSA).
 IAM_ROLE_ANNOTATION = "eks.amazonaws.com/role-arn"
@@ -56,7 +54,7 @@ class SimpleConfigHandler(ConfigHandler):
         if not isinstance(data, list):
             raise ValueError(f"'simple' must be a list of tables in {source_file}")
 
-        variables = _parse_variables(root_config.get("variables"), source_file)
+        variables = parse_variables(root_config.get("variables"), source_file)
         for index, item in enumerate(data):
             if not isinstance(item, dict):
                 raise ValueError(
@@ -340,8 +338,8 @@ def _inject_configmaps(
     if not config.config:
         return
 
-    configmaps = _make_configmaps(k8s_name, config.config, context)
-    checksum = _config_checksum(configmaps)
+    configmaps = make_configmaps(k8s_name, config.config, context)
+    checksum = config_checksum(configmaps)
     for cm in configmaps:
         cm.setdefault("metadata", {})["namespace"] = config.namespace
     docs.extend(configmaps)
@@ -360,7 +358,7 @@ def _inject_configmaps(
             doc.setdefault("spec", {}).setdefault("template", {}).setdefault("spec", {})
         )
         for mount_path in sorted(mount_groups):
-            cm_name = f"{k8s_name}-{_configmap_suffix_from_mount_path(mount_path)}"
+            cm_name = f"{k8s_name}-{configmap_suffix_from_mount_path(mount_path)}"
             for container in pod_spec.get("containers", []):
                 container.setdefault("volumeMounts", []).append(
                     {"name": cm_name, "mountPath": mount_path}
@@ -380,7 +378,7 @@ def _inject_external_secrets(docs: list[dict], config: SimpleConfig) -> None:
         return
 
     for mount_path in config.external_secrets:
-        secret_name = _secret_name_from_mount_path(mount_path)
+        secret_name = secret_name_from_mount_path(mount_path)
         for doc in docs:
             if doc.get("kind") != "Deployment":
                 continue
@@ -464,7 +462,7 @@ def generate_simple(
         **(images or {}),
         **config.variables,
         "name": config.name,
-        "k8s_name": _make_k8s_name(config.name),
+        "k8s_name": make_k8s_name(config.name),
         "namespace": config.namespace,
         "replicas": config.replicas,
     }
@@ -519,7 +517,7 @@ def generate_simple(
                         doc.setdefault("metadata", {})["namespace"] = config.namespace
                 docs.append(doc)
 
-    k8s_name = _make_k8s_name(config.name)
+    k8s_name = make_k8s_name(config.name)
     _inject_configmaps(docs, config, k8s_name, context)
 
     _inject_external_secrets(docs, config)
@@ -529,6 +527,6 @@ def generate_simple(
 
     if config.custom_token_audiences:
         for doc in docs:
-            _inject_custom_token_projection(doc, config.custom_token_audiences)
+            inject_custom_token_projection(doc, config.custom_token_audiences)
 
-    return _write_documents(docs, output_dir, config.namespace, config.name)
+    return write_documents(docs, output_dir, config.namespace, config.name)

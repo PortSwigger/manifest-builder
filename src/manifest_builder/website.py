@@ -2,8 +2,6 @@
 # SPDX-FileCopyrightText: The manifest-builder contributors
 """Website manifest generation from Mustache templates."""
 
-import hashlib
-import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -17,12 +15,17 @@ from manifest_builder.config import (
     validate_known_fields,
     validate_website_config,
 )
-from manifest_builder.generator import (
-    CLUSTER_SCOPED_KINDS,
-    _make_k8s_name,
-    _write_documents,
-)
 from manifest_builder.handlers import ConfigHandler, GenerationContext
+from manifest_builder.k8s import (
+    CLUSTER_SCOPED_KINDS,
+    config_checksum,
+    configmap_suffix_from_mount_path,
+    inject_custom_token_projection,
+    make_configmaps,
+    make_k8s_name,
+    secret_name_from_mount_path,
+)
+from manifest_builder.output import write_documents
 
 
 class WebsiteConfigHandler(ConfigHandler):
@@ -242,34 +245,14 @@ def _load_fragments(templates_dir: Path, context: dict) -> dict[str, dict]:
     return fragments
 
 
-def _secret_name_from_mount_path(mount_path: str) -> str:
-    """Generate a secret name from a mount path.
-
-    Removes the leading / and converts subsequent / to -.
-
-    Examples:
-        "/email-password" -> "email-password"
-        "/config/database" -> "config-database"
-
-    Args:
-        mount_path: The mount path (e.g., "/email-password")
-
-    Returns:
-        The generated secret name
-    """
-    if not mount_path.startswith("/"):
-        raise ValueError(f"Mount path must start with /: {mount_path}")
-    return mount_path[1:].replace("/", "-")
-
-
 def _persistent_volume_claim_name(k8s_name: str, mount_path: str) -> str:
     """Generate a PVC claim name for a website persistence mount."""
-    return f"{k8s_name}-{_secret_name_from_mount_path(mount_path)}"
+    return f"{k8s_name}-{secret_name_from_mount_path(mount_path)}"
 
 
 def _emptydir_volume_name(mount_path: str) -> str:
     """Generate a volume name for an emptyDir mount."""
-    return f"emptydir-{_secret_name_from_mount_path(mount_path)}"
+    return f"emptydir-{secret_name_from_mount_path(mount_path)}"
 
 
 def _permission_init_container(volume_name: str, mount_path: str) -> dict[str, object]:
@@ -322,7 +305,7 @@ def _inject_persistence_mounts(
         doc.setdefault("spec", {}).setdefault("template", {}).setdefault("spec", {})
     )
     for mount_path in sorted(persistence):
-        volume_name = _secret_name_from_mount_path(mount_path)
+        volume_name = secret_name_from_mount_path(mount_path)
         claim_name = _persistent_volume_claim_name(k8s_name, mount_path)
 
         for container in pod_spec.get("containers", []):
@@ -365,116 +348,6 @@ def _inject_emptydir_mount(doc: dict, mount_path: str) -> None:
     )
     pod_spec.setdefault("initContainers", []).append(
         _permission_init_container(volume_name, mount_path)
-    )
-
-
-def _make_configmaps(
-    k8s_name: str,
-    config_files: dict[str, Path],
-    context: dict[str, Any] | None = None,
-) -> list[dict]:
-    """Build ConfigMap objects grouped by the parent directory of each path.
-
-    Args:
-        k8s_name: Kubernetes-safe name for the website (used in ConfigMap names)
-        config_files: Dict mapping container path -> resolved local file path
-        context: Optional Mustache context for rendering file contents
-
-    Returns:
-        List of ConfigMap dictionaries grouped by parent directory
-    """
-    renderer = None
-    if context is not None:
-        import pystache
-        from pystache.common import MissingTags
-
-        renderer = pystache.Renderer(missing_tags=MissingTags.strict)
-
-    groups: dict[str, dict[str, str]] = {}
-    for container_path, local_path in config_files.items():
-        path = Path(container_path)
-        if not path.is_absolute():
-            raise ValueError(f"Config file path must be absolute: {container_path}")
-        mount_path = str(path.parent)
-        if mount_path == ".":
-            raise ValueError(
-                f"Config file path must include a filename: {container_path}"
-            )
-        data_key = path.name
-        content = local_path.read_text()
-        if renderer is not None:
-            content = renderer.render(content, context)
-        groups.setdefault(mount_path, {})[data_key] = content
-
-    return [
-        {
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": {
-                "name": f"{k8s_name}-{_configmap_suffix_from_mount_path(mount_path)}"
-            },
-            "data": data,
-        }
-        for mount_path, data in sorted(groups.items())
-    ]
-
-
-def _configmap_suffix_from_mount_path(mount_path: str) -> str:
-    """Generate a ConfigMap name suffix from a mount path."""
-    if mount_path == "/":
-        return "root"
-    return mount_path.lstrip("/").replace("/", "-")
-
-
-def _config_checksum(configmaps: list[dict]) -> str:
-    """Build a deterministic checksum for generated ConfigMap contents."""
-    normalized = [
-        {
-            "name": configmap["metadata"]["name"],
-            "data": {
-                key: value for key, value in sorted(configmap.get("data", {}).items())
-            },
-        }
-        for configmap in sorted(configmaps, key=lambda item: item["metadata"]["name"])
-    ]
-    payload = json.dumps(normalized, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _inject_custom_token_projection(doc: dict, audiences: list[str]) -> None:
-    """Inject a projected service account token volume into a Deployment."""
-    if doc.get("kind") != "Deployment":
-        return
-
-    pod_spec = (
-        doc.setdefault("spec", {}).setdefault("template", {}).setdefault("spec", {})
-    )
-
-    for container in pod_spec.get("containers", []):
-        container.setdefault("volumeMounts", []).append(
-            {
-                "name": "tokens",
-                "mountPath": "/var/run/secrets/tokens",
-                "readOnly": True,
-            }
-        )
-
-    pod_spec.setdefault("volumes", []).append(
-        {
-            "name": "tokens",
-            "projected": {
-                "sources": [
-                    {
-                        "serviceAccountToken": {
-                            "path": audience,
-                            "expirationSeconds": 3600,
-                            "audience": audience,
-                        }
-                    }
-                    for audience in audiences
-                ]
-            },
-        }
     )
 
 
@@ -549,7 +422,7 @@ def generate_website(
     # Prepare the template context with name, k8s_name, and optional image/args/git_repo
     context: dict[str, Any] = {
         "name": config.name,
-        "k8s_name": _make_k8s_name(config.name),
+        "k8s_name": make_k8s_name(config.name),
         "namespace": config.namespace,
         "replicas": config.replicas,
     }
@@ -574,7 +447,7 @@ def generate_website(
                 self.k8s_hostname = k8s_hostname
 
         context["extra_hostnames"] = [
-            ExtraHostname(h, _make_k8s_name(h)) for h in normalized
+            ExtraHostname(h, make_k8s_name(h)) for h in normalized
         ]
         context["has_extra_hostnames"] = True
 
@@ -646,9 +519,9 @@ def generate_website(
 
     # Generate ConfigMaps from config files and inject volumes/mounts if configured
     if config.config:
-        k8s_name = _make_k8s_name(config.name)
-        configmaps = _make_configmaps(k8s_name, config.config)
-        checksum = _config_checksum(configmaps)
+        k8s_name = make_k8s_name(config.name)
+        configmaps = make_configmaps(k8s_name, config.config)
+        checksum = config_checksum(configmaps)
         # Inject namespace into ConfigMaps (they're added after the main namespace loop)
         for cm in configmaps:
             cm.setdefault("metadata", {})["namespace"] = config.namespace
@@ -670,7 +543,7 @@ def generate_website(
                 )
                 for mount_path in sorted(mount_groups):
                     cm_name = (
-                        f"{k8s_name}-{_configmap_suffix_from_mount_path(mount_path)}"
+                        f"{k8s_name}-{configmap_suffix_from_mount_path(mount_path)}"
                     )
                     # Add volumeMount to each container
                     for container in pod_spec.get("containers", []):
@@ -684,9 +557,9 @@ def generate_website(
 
     # Handle external secrets if configured
     if config.external_secrets:
-        k8s_name = _make_k8s_name(config.name)
+        k8s_name = make_k8s_name(config.name)
         for mount_path in config.external_secrets:
-            secret_name = _secret_name_from_mount_path(mount_path)
+            secret_name = secret_name_from_mount_path(mount_path)
             # Inject volumes and mounts into Deployment
             for doc in docs:
                 if doc.get("kind") == "Deployment":
@@ -706,7 +579,7 @@ def generate_website(
                     )
 
     if config.persistence:
-        k8s_name = _make_k8s_name(config.name)
+        k8s_name = make_k8s_name(config.name)
         pvcs = _make_persistent_volume_claims(k8s_name, config.persistence)
         for pvc in pvcs:
             pvc.setdefault("metadata", {})["namespace"] = config.namespace
@@ -721,6 +594,6 @@ def generate_website(
 
     if config.custom_token_audiences:
         for doc in docs:
-            _inject_custom_token_projection(doc, config.custom_token_audiences)
+            inject_custom_token_projection(doc, config.custom_token_audiences)
 
-    return _write_documents(docs, output_dir, config.namespace, config.name)
+    return write_documents(docs, output_dir, config.namespace, config.name)

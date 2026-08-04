@@ -13,21 +13,19 @@ from pystache.common import MissingTags
 from manifest_builder.config import (
     CopyConfig,
     ManifestConfig,
-    validate_known_fields,
+    parse_variables,
     validate_copy_config,
-)
-from manifest_builder.generator import (
-    CLUSTER_SCOPED_KINDS,
-    _make_k8s_name,
-    _parse_variables,
-    _write_documents,
+    validate_known_fields,
 )
 from manifest_builder.handlers import ConfigHandler, GenerationContext
-from manifest_builder.website import (
-    _config_checksum,
-    _configmap_suffix_from_mount_path,
-    _make_configmaps,
+from manifest_builder.k8s import (
+    CLUSTER_SCOPED_KINDS,
+    config_checksum,
+    configmap_suffix_from_mount_path,
+    make_configmaps,
+    make_k8s_name,
 )
+from manifest_builder.output import write_documents
 
 
 class CopyConfigHandler(ConfigHandler):
@@ -51,7 +49,7 @@ class CopyConfigHandler(ConfigHandler):
         if not isinstance(data, list):
             raise ValueError(f"'copy' must be a list of tables in {source_file}")
 
-        variables = _parse_variables(root_config.get("variables"), source_file)
+        variables = parse_variables(root_config.get("variables"), source_file)
         for index, item in enumerate(data):
             if not isinstance(item, dict):
                 raise ValueError(
@@ -186,9 +184,9 @@ def generate_copy(
                 doc.setdefault("metadata", {})["namespace"] = config.namespace
 
     if config.config:
-        k8s_name = _make_k8s_name(config.name)
-        configmaps = _make_configmaps(k8s_name, config.config)
-        checksum = _config_checksum(configmaps)
+        k8s_name = make_k8s_name(config.name)
+        configmaps = make_configmaps(k8s_name, config.config)
+        checksum = config_checksum(configmaps)
         for cm in configmaps:
             cm.setdefault("metadata", {})["namespace"] = config.namespace
         docs.extend(configmaps)
@@ -208,7 +206,7 @@ def generate_copy(
                 )
                 for mount_path in sorted(mount_groups):
                     cm_name = (
-                        f"{k8s_name}-{_configmap_suffix_from_mount_path(mount_path)}"
+                        f"{k8s_name}-{configmap_suffix_from_mount_path(mount_path)}"
                     )
                     for container in pod_spec.get("containers", []):
                         container.setdefault("volumeMounts", []).append(
@@ -218,4 +216,4 @@ def generate_copy(
                         {"name": cm_name, "configMap": {"name": cm_name}}
                     )
 
-    return _write_documents(docs, output_dir, config.namespace, config.name)
+    return write_documents(docs, output_dir, config.namespace, config.name)

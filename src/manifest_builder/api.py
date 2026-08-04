@@ -21,8 +21,6 @@ from manifest_builder.config import (
 from manifest_builder.copy import CopyConfigHandler
 from manifest_builder.generator import (
     HelmConfigHandler,
-    _dump_yaml,
-    _load_all_yaml,
     generate_manifests,
     plural,
 )
@@ -38,6 +36,7 @@ from manifest_builder.git_utils import (
     is_git_dirty,
 )
 from manifest_builder.helmfile import load_helmfile
+from manifest_builder.output import dump_yaml, load_all_yaml
 from manifest_builder.public_repo import PublicRepoConfigHandler
 from manifest_builder.result import GenerationResult, KubernetesObjectRef
 from manifest_builder.simple import SimpleConfigHandler
@@ -307,8 +306,8 @@ def _restore_deploy_id_only_changes(paths: set[Path]) -> None:
 
 def _manifests_equal_ignoring_deploy_id(left: str, right: str) -> bool:
     """Return whether two manifest streams match aside from deploy-id annotations."""
-    return _without_deploy_id(_load_all_yaml(left)) == _without_deploy_id(
-        _load_all_yaml(right)
+    return _without_deploy_id(load_all_yaml(left)) == _without_deploy_id(
+        load_all_yaml(right)
     )
 
 
@@ -335,7 +334,7 @@ def _annotate_manifest_files(paths: set[Path], deploy_id: str) -> None:
     for path in sorted(paths):
         text = path.read_text()
         leading_comments = _leading_comments(text)
-        documents = _load_all_yaml(text)
+        documents = load_all_yaml(text)
         changed = False
         for doc in documents:
             if not isinstance(doc, dict) or not doc.get("kind"):
@@ -359,7 +358,7 @@ def _annotate_manifest_files(paths: set[Path], deploy_id: str) -> None:
                 for index, doc in enumerate(documents):
                     if index:
                         f.write("---\n")
-                    _dump_yaml(doc, f)
+                    dump_yaml(doc, f)
 
 
 def _leading_comments(text: str) -> str:
@@ -387,7 +386,7 @@ def _object_refs_from_deleted_paths(paths: set[Path]) -> set[KubernetesObjectRef
 
 def _object_refs_from_content(content: str) -> set[KubernetesObjectRef]:
     refs: set[KubernetesObjectRef] = set()
-    for doc in _load_all_yaml(content):
+    for doc in load_all_yaml(content):
         ref = _object_ref_from_doc(doc)
         if ref is not None:
             refs.add(ref)

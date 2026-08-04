@@ -364,6 +364,30 @@ def load_extra_variables(path: Path) -> dict[str, TemplateValue]:
     return variables
 
 
+def parse_variables(
+    data: object,
+    source_file: Path,
+) -> dict[str, TemplateValue]:
+    """Parse the top-level ``[variables]`` table used for template rendering."""
+    if data is None:
+        return {}
+
+    if not isinstance(data, dict):
+        raise ValueError(f"'variables' must be a table in {source_file}")
+
+    variables: dict[str, TemplateValue] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            raise ValueError(f"Variable keys in {source_file} must be strings")
+        if not isinstance(value, str | int | float | bool):
+            raise ValueError(
+                f"Variable '{key}' in {source_file} must be a string, number, or boolean"
+            )
+        variables[key] = value
+
+    return variables
+
+
 def load_configs(
     config_dir: Path,
     handlers: "Sequence[ConfigHandler]",

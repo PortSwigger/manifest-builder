@@ -14,14 +14,12 @@ from manifest_builder.config import (
     ManifestConfig,
     PublicRepoConfig,
     TemplateValue,
+    parse_variables,
     validate_known_fields,
 )
-from manifest_builder.generator import (
-    CLUSTER_SCOPED_KINDS,
-    _parse_variables,
-    _write_documents,
-)
 from manifest_builder.handlers import ConfigHandler, GenerationContext
+from manifest_builder.k8s import CLUSTER_SCOPED_KINDS
+from manifest_builder.output import write_documents
 
 
 class PublicRepoConfigHandler(ConfigHandler):
@@ -45,7 +43,7 @@ class PublicRepoConfigHandler(ConfigHandler):
         if not isinstance(data, list):
             raise ValueError(f"'public-repo' must be a list of tables in {source_file}")
 
-        variables = _parse_variables(root_config.get("variables"), source_file)
+        variables = parse_variables(root_config.get("variables"), source_file)
         for index, item in enumerate(data):
             if not isinstance(item, dict):
                 raise ValueError(
@@ -158,4 +156,4 @@ def generate_public_repo(
         if kind and kind not in CLUSTER_SCOPED_KINDS:
             doc.setdefault("metadata", {})["namespace"] = config.namespace
 
-    return _write_documents(docs, output_dir, config.namespace, config.name)
+    return write_documents(docs, output_dir, config.namespace, config.name)

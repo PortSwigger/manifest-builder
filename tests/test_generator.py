@@ -17,11 +17,10 @@ from manifest_builder.generator import (
     HelmConfigHandler,
     _ensure_namespaces,
     _generate_helm_manifests,
-    _make_k8s_name,
     generate_manifests,
-    strip_helm_metadata,
-    write_manifests,
 )
+from manifest_builder.k8s import make_k8s_name
+from manifest_builder.output import strip_helm_metadata, write_manifests
 
 NAMESPACED_YAML = """\
 apiVersion: apps/v1
@@ -155,7 +154,7 @@ metadata:
   name: my-config
 data: {}
 """
-    caplog.set_level(logging.DEBUG, logger="manifest_builder.generator")
+    caplog.set_level(logging.DEBUG, logger="manifest_builder.output")
 
     paths = write_manifests(yaml_with_hooks, tmp_path, "default")
 
@@ -550,48 +549,48 @@ def test_write_manifests_returns_paths_for_stale_file_removal(tmp_path: Path) ->
 
 def test_make_k8s_name_valid_domain() -> None:
     """Valid domain names should be converted correctly."""
-    assert _make_k8s_name("example.com") == "example-com"
-    assert _make_k8s_name("my.example.com") == "my-example-com"
-    assert _make_k8s_name("zq.lu") == "zq-lu"
+    assert make_k8s_name("example.com") == "example-com"
+    assert make_k8s_name("my.example.com") == "my-example-com"
+    assert make_k8s_name("zq.lu") == "zq-lu"
 
 
 def test_make_k8s_name_valid_alphanumeric() -> None:
     """Valid alphanumeric names with dashes should be preserved."""
-    assert _make_k8s_name("my-app") == "my-app"
-    assert _make_k8s_name("app123") == "app123"
-    assert _make_k8s_name("A-B-C") == "a-b-c"
+    assert make_k8s_name("my-app") == "my-app"
+    assert make_k8s_name("app123") == "app123"
+    assert make_k8s_name("A-B-C") == "a-b-c"
 
 
 def test_make_k8s_name_starts_with_dash() -> None:
     """Names starting with a period (resulting in dash) should raise ValueError."""
     with pytest.raises(ValueError, match="must start with an alphanumeric character"):
-        _make_k8s_name(".example.com")
+        make_k8s_name(".example.com")
 
 
 def test_make_k8s_name_ends_with_dash() -> None:
     """Names ending with a period (resulting in dash) should raise ValueError."""
     with pytest.raises(ValueError, match="must end with an alphanumeric character"):
-        _make_k8s_name("example.com.")
+        make_k8s_name("example.com.")
 
 
 def test_make_k8s_name_exceeds_63_characters() -> None:
     """Names exceeding 63 characters should raise ValueError."""
     long_name = "a" * 50 + "." + "b" * 20  # Will exceed 63 after replacement
     with pytest.raises(ValueError, match="exceeds 63 character limit"):
-        _make_k8s_name(long_name)
+        make_k8s_name(long_name)
 
 
 def test_make_k8s_name_only_periods() -> None:
     """Names consisting only of periods should fail validation."""
     # A single period becomes a single dash, which fails the alphanumeric start/end check
     with pytest.raises(ValueError, match="must start with an alphanumeric character"):
-        _make_k8s_name(".")
+        make_k8s_name(".")
 
 
 def test_make_k8s_name_invalid_characters() -> None:
     """Names with invalid characters (after conversion) should raise ValueError."""
     with pytest.raises(ValueError, match="contains invalid characters"):
-        _make_k8s_name("my_app")  # underscore is invalid
+        make_k8s_name("my_app")  # underscore is invalid
 
 
 # ---------------------------------------------------------------------------
