@@ -199,8 +199,11 @@ def write_manifests(
     # Add namespace to namespaced resources that don't already have one
     for doc in documents:
         kind = doc.get("kind")
-        if kind and kind not in CLUSTER_SCOPED_KINDS:
-            if "namespace" not in doc.get("metadata", {}):
-                doc.setdefault("metadata", {})["namespace"] = namespace
+        if (
+            kind
+            and kind not in CLUSTER_SCOPED_KINDS
+            and "namespace" not in doc.get("metadata", {})
+        ):
+            doc.setdefault("metadata", {})["namespace"] = namespace
 
     return write_documents(documents, output_dir, namespace, app_name)

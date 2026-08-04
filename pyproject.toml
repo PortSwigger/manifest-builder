@@ -36,6 +36,10 @@ version-file = "src/manifest_builder/_version.py"
 [tool.ruff]
 exclude = ["src/manifest_builder/_version.py"]
 
+[tool.ruff.lint]
+# Config handlers report malformed user configuration consistently as ValueError.
+ignore = ["TRY004"]
+
 [[tool.uv.index]]
 name = "repo.noa.re"
 url = "https://repo.noa.re"

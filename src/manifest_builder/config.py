@@ -546,8 +546,7 @@ def load_configs(
             variables from the config directory are rejected with ValueError.
         default_namespace: Namespace to use when a config entry omits its
             ``namespace`` field.
-        default_image: Image to use for namespace-mode simple and website
-            config entries that omit their ``image`` field.
+        default_image: Image override passed to config handlers in namespace mode.
         target: Name of the target to load, for a ``version = 2`` config
             directory. Required for those, and rejected for the older layout,
             which has no targets to choose between.

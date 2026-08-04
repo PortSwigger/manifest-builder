@@ -84,7 +84,7 @@ def make_k8s_name(name: str) -> str:
 
     # Verify that only valid characters are present (lowercase alphanumeric and hyphens)
     if not all(c.isalnum() or c == "-" for c in k8s_name):
-        invalid_chars = set(c for c in k8s_name if not (c.isalnum() or c == "-"))
+        invalid_chars = {c for c in k8s_name if not (c.isalnum() or c == "-")}
         raise ValueError(
             f"Kubernetes name '{k8s_name}' contains invalid characters: {invalid_chars}. "
             f"Only lowercase alphanumerics and hyphens are allowed."

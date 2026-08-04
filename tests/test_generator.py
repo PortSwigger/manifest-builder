@@ -402,17 +402,20 @@ metadata:
 data: {}
 """
 
-    with mock.patch(
-        "manifest_builder.blocks.helm.run_helm_template", return_value=intrusive_yaml
+    with (
+        mock.patch(
+            "manifest_builder.blocks.helm.run_helm_template",
+            return_value=intrusive_yaml,
+        ),
+        pytest.raises(ValueError, match="owned by another service"),
     ):
-        with pytest.raises(ValueError, match="owned by another service"):
-            generate_manifests(
-                [HelmConfigHandler([config])],
-                tmp_path / "out",
-                repo_root=tmp_path,
-                charts_dir=tmp_path / "charts",
-                owned_namespaces={"team-a"},
-            )
+        generate_manifests(
+            [HelmConfigHandler([config])],
+            tmp_path / "out",
+            repo_root=tmp_path,
+            charts_dir=tmp_path / "charts",
+            owned_namespaces={"team-a"},
+        )
 
 
 def test_strip_helm_metadata_removes_helm_labels() -> None:
@@ -976,11 +979,11 @@ spec:
             "manifest_builder.blocks.helm.run_helm_template",
             return_value=two_deployments,
         ),
-    ):
-        with pytest.raises(
+        pytest.raises(
             ValueError, match="init requires exactly one Deployment.*found 2"
-        ):
-            _generate_helm_manifests(config, output_dir, charts_dir, images=images)
+        ),
+    ):
+        _generate_helm_manifests(config, output_dir, charts_dir, images=images)
 
 
 def test_generate_helm_manifests_init_no_deployments(tmp_path: Path) -> None:
@@ -1026,11 +1029,11 @@ spec:
             "manifest_builder.blocks.helm.run_helm_template",
             return_value=service_yaml,
         ),
-    ):
-        with pytest.raises(
+        pytest.raises(
             ValueError, match="init requires exactly one Deployment.*found 0"
-        ):
-            _generate_helm_manifests(config, output_dir, charts_dir, images=images)
+        ),
+    ):
+        _generate_helm_manifests(config, output_dir, charts_dir, images=images)
 
 
 def test_generate_helm_manifests_init_missing_alpine_image(tmp_path: Path) -> None:
@@ -1079,12 +1082,12 @@ spec:
             "manifest_builder.blocks.helm.run_helm_template",
             return_value=deployment_yaml,
         ),
-    ):
-        with pytest.raises(
+        pytest.raises(
             ValueError,
             match="init requires 'alpine_image' to be defined in images.toml",
-        ):
-            _generate_helm_manifests(config, output_dir, charts_dir, images=images)
+        ),
+    ):
+        _generate_helm_manifests(config, output_dir, charts_dir, images=images)
 
 
 def test_generate_helm_manifests_init_no_volumemounts(tmp_path: Path) -> None:

@@ -35,6 +35,7 @@ def get_helm_version() -> str:
             ["helm", "version", "--short"],
             capture_output=True,
             text=True,
+            check=False,
             timeout=5,
         )
         if result.returncode != 0:
@@ -61,6 +62,7 @@ def check_helm_available() -> bool:
         subprocess.run(
             ["helm", "version", "--short"],
             capture_output=True,
+            check=False,
             text=True,
             timeout=5,
         )

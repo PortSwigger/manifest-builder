@@ -203,9 +203,12 @@ def generate_copy(
 
     for doc in docs:
         kind = doc.get("kind")
-        if kind and kind not in CLUSTER_SCOPED_KINDS:
-            if "namespace" not in doc.get("metadata", {}):
-                doc.setdefault("metadata", {})["namespace"] = config.namespace
+        if (
+            kind
+            and kind not in CLUSTER_SCOPED_KINDS
+            and "namespace" not in doc.get("metadata", {})
+        ):
+            doc.setdefault("metadata", {})["namespace"] = config.namespace
 
     if config.config:
         k8s_name = make_k8s_name(config.name)

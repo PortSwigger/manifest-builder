@@ -20,6 +20,7 @@ from manifest_builder.config import (
 )
 from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.helm import ChartCacheStats, pull_chart, run_helm_template
+from manifest_builder.helmfile import Helmfile
 from manifest_builder.k8s import CLUSTER_SCOPED_KINDS, config_checksum
 from manifest_builder.output import (
     dump_all_yaml,
@@ -132,7 +133,7 @@ class HelmConfigHandler(ConfigHandler[ChartConfig]):
     def iter_configs(self) -> Sequence[ChartConfig]:
         return self.configs
 
-    def resolve(self, helmfile: object | None) -> None:
+    def resolve(self, helmfile: Helmfile | None) -> None:
         if not any(config.release for config in self.configs):
             return
 
@@ -330,9 +331,9 @@ def _parse_chart_config_files(
     return config_files
 
 
-def _get_helmfile_data(helmfile: object) -> tuple[dict[str, str], dict[str, Any]]:
-    repositories = getattr(helmfile, "repositories")
-    releases = getattr(helmfile, "releases")
+def _get_helmfile_data(helmfile: Helmfile) -> tuple[dict[str, str], dict[str, Any]]:
+    repositories = helmfile.repositories
+    releases = helmfile.releases
     repo_by_name = {
         repo.name: (f"oci://{repo.url}" if repo.oci else repo.url)
         for repo in repositories
@@ -489,9 +490,12 @@ def _generate_helm_manifests(
             for doc in load_all_yaml(rendered):
                 # Add namespace to namespaced resources without one
                 kind = doc.get("kind")
-                if kind and kind not in CLUSTER_SCOPED_KINDS:
-                    if "namespace" not in doc.get("metadata", {}):
-                        doc.setdefault("metadata", {})["namespace"] = config.namespace
+                if (
+                    kind
+                    and kind not in CLUSTER_SCOPED_KINDS
+                    and "namespace" not in doc.get("metadata", {})
+                ):
+                    doc.setdefault("metadata", {})["namespace"] = config.namespace
                 extra_docs.append(doc)
         if extra_docs:
             extra_paths = write_documents(

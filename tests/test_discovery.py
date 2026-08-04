@@ -79,7 +79,7 @@ class GreetingConfigHandler(ConfigHandler[GreetingConfig]):
         return write_documents([doc], context.output_dir, config.namespace, config.name)
 '''
 
-BUILTIN_KEYS = ["copy", "helm", "simple", "website"]
+BUILTIN_KEYS = ["copy", "helm", "simple"]
 
 
 @pytest.fixture(autouse=True)
