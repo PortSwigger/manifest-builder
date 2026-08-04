@@ -1277,6 +1277,140 @@ spec:
     )
 
 
+def test_generate_helm_manifests_injects_custom_token_audiences(
+    tmp_path: Path,
+) -> None:
+    chart_dir = tmp_path / "chart"
+    chart_dir.mkdir()
+    config = ChartConfig(
+        name="my-chart",
+        namespace="default",
+        chart=str(chart_dir),
+        repo=None,
+        version=None,
+        values=[],
+        release=None,
+        custom_token_audiences=["vault", "api"],
+    )
+    deployment_yaml = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: myapp:1.0
+      - name: sidecar
+        image: sidecar:1.0
+"""
+
+    with mock.patch(
+        "manifest_builder.blocks.helm.run_helm_template",
+        return_value=deployment_yaml,
+    ):
+        _generate_helm_manifests(config, tmp_path / "output", tmp_path / "charts")
+
+    deployment = yaml.safe_load(
+        (tmp_path / "output/default/deployment-my-app.yaml").read_text()
+    )
+    pod_spec = deployment["spec"]["template"]["spec"]
+    assert pod_spec["volumes"] == [
+        {
+            "name": "tokens",
+            "projected": {
+                "sources": [
+                    {
+                        "serviceAccountToken": {
+                            "path": "vault",
+                            "expirationSeconds": 3600,
+                            "audience": "vault",
+                        }
+                    },
+                    {
+                        "serviceAccountToken": {
+                            "path": "api",
+                            "expirationSeconds": 3600,
+                            "audience": "api",
+                        }
+                    },
+                ]
+            },
+        }
+    ]
+    expected_mount = {
+        "name": "tokens",
+        "mountPath": "/var/run/secrets/tokens",
+        "readOnly": True,
+    }
+    assert all(
+        container["volumeMounts"] == [expected_mount]
+        for container in pod_spec["containers"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("rendered_yaml", "deployment_count"),
+    [
+        (
+            """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+""",
+            0,
+        ),
+        (
+            """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: first
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: second
+""",
+            2,
+        ),
+    ],
+)
+def test_generate_helm_custom_token_audiences_requires_one_deployment(
+    tmp_path: Path, rendered_yaml: str, deployment_count: int
+) -> None:
+    chart_dir = tmp_path / "chart"
+    chart_dir.mkdir()
+    config = ChartConfig(
+        name="my-chart",
+        namespace="default",
+        chart=str(chart_dir),
+        repo=None,
+        version=None,
+        values=[],
+        release=None,
+        custom_token_audiences=["vault"],
+    )
+
+    with (
+        mock.patch(
+            "manifest_builder.blocks.helm.run_helm_template",
+            return_value=rendered_yaml,
+        ),
+        pytest.raises(
+            ValueError,
+            match=(
+                "Custom token audience injection for Helm chart 'my-chart' "
+                f"requires exactly one Deployment, found {deployment_count}"
+            ),
+        ),
+    ):
+        _generate_helm_manifests(config, tmp_path / "output", tmp_path / "charts")
+
+
 def test_name_overrides_avoid_helm_configmap_collisions(tmp_path: Path) -> None:
     """Name overrides should distinguish ConfigMaps for a shared Helmfile release."""
     chart_dir = tmp_path / "chart"

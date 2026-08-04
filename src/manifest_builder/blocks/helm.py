@@ -21,7 +21,11 @@ from manifest_builder.config import (
 from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.helm import ChartCacheStats, pull_chart, run_helm_template
 from manifest_builder.helmfile import Helmfile
-from manifest_builder.k8s import CLUSTER_SCOPED_KINDS, config_checksum
+from manifest_builder.k8s import (
+    CLUSTER_SCOPED_KINDS,
+    config_checksum,
+    inject_custom_token_projection,
+)
 from manifest_builder.output import (
     dump_all_yaml,
     load_all_yaml,
@@ -53,6 +57,7 @@ class ChartConfig:
     init: Path | None = None  # optional shell script to inject as initContainer
     config: dict[str, Path] | None = None  # ConfigMap key -> resolved local path
     name_override: str | None = None  # optional release name passed to helm template
+    custom_token_audiences: list[str] | None = None
 
 
 def validate_chart_config(config: ChartConfig, repo_root: Path) -> None:
@@ -197,6 +202,7 @@ class HelmConfigHandler(ConfigHandler[ChartConfig]):
                     init=config.init,
                     config=config.config,
                     name_override=config.name_override,
+                    custom_token_audiences=config.custom_token_audiences,
                 )
             )
 
@@ -243,6 +249,8 @@ def _parse_chart_config(
             "extra-resources",
             "init",
             "name-override",
+            "custom-token-audience",
+            "custom-token-audiences",
         },
         source_file,
         table_index,
@@ -274,6 +282,7 @@ def _parse_chart_config(
         init = config_dir / data["init"]
 
     config_files = _parse_chart_config_files(data.get("config"), source_file)
+    custom_token_audiences = _parse_custom_token_audiences(data, source_file)
 
     if has_release:
         return ChartConfig(
@@ -289,6 +298,7 @@ def _parse_chart_config(
             init=init,
             config=config_files,
             name_override=data.get("name-override"),
+            custom_token_audiences=custom_token_audiences,
         )
 
     if "name" not in data:
@@ -306,7 +316,37 @@ def _parse_chart_config(
         init=init,
         config=config_files,
         name_override=data.get("name-override"),
+        custom_token_audiences=custom_token_audiences,
     )
+
+
+def _parse_custom_token_audiences(data: dict, source_file: Path) -> list[str] | None:
+    """Normalize singular and plural custom token audience fields."""
+    custom_token_audience = data.get("custom-token-audience")
+    custom_token_audiences = data.get("custom-token-audiences")
+
+    if custom_token_audience is not None and custom_token_audiences is not None:
+        raise ValueError(
+            f"Cannot specify both 'custom-token-audience' and "
+            f"'custom-token-audiences' in {source_file}"
+        )
+
+    if custom_token_audience is not None:
+        if not isinstance(custom_token_audience, str):
+            raise ValueError(
+                f"'custom-token-audience' must be a string in {source_file}"
+            )
+        return [custom_token_audience]
+
+    if custom_token_audiences is not None and (
+        not isinstance(custom_token_audiences, list)
+        or not all(isinstance(audience, str) for audience in custom_token_audiences)
+    ):
+        raise ValueError(
+            f"'custom-token-audiences' must be a list of strings in {source_file}"
+        )
+
+    return custom_token_audiences
 
 
 def _parse_chart_config_files(
@@ -416,6 +456,17 @@ def _generate_helm_manifests(
             namespace=config.namespace,
             values_files=values_paths,
         )
+
+    if config.custom_token_audiences:
+        docs = load_all_yaml(manifest_content)
+        deployments = [doc for doc in docs if doc.get("kind") == "Deployment"]
+        if len(deployments) != 1:
+            raise ValueError(
+                f"Custom token audience injection for Helm chart '{config.name}' "
+                f"requires exactly one Deployment, found {len(deployments)}"
+            )
+        inject_custom_token_projection(deployments[0], config.custom_token_audiences)
+        manifest_content = dump_all_yaml(docs)
 
     # Inject init container if configured
     if config.init:

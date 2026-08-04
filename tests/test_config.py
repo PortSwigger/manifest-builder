@@ -220,6 +220,110 @@ def test_load_chart_config_with_config(tmp_path: Path) -> None:
     assert config.config == {"app.conf": config_file}
 
 
+def test_load_chart_config_with_custom_token_audiences(tmp_path: Path) -> None:
+    conf_dir = tmp_path / "conf"
+    conf_dir.mkdir()
+    write_toml(
+        conf_dir,
+        "config.toml",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        custom-token-audiences = ["vault", "api"]
+        """,
+    )
+
+    config = only_config(load_test_configs(conf_dir))
+
+    assert isinstance(config, ChartConfig)
+    assert config.custom_token_audiences == ["vault", "api"]
+
+
+def test_load_chart_config_with_custom_token_audience(tmp_path: Path) -> None:
+    conf_dir = tmp_path / "conf"
+    conf_dir.mkdir()
+    write_toml(
+        conf_dir,
+        "config.toml",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        custom-token-audience = "vault"
+        """,
+    )
+
+    config = only_config(load_test_configs(conf_dir))
+
+    assert isinstance(config, ChartConfig)
+    assert config.custom_token_audiences == ["vault"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "custom-token-audience",
+            '["vault"]',
+            "'custom-token-audience' must be a string",
+        ),
+        (
+            "custom-token-audiences",
+            '"vault"',
+            "'custom-token-audiences' must be a list of strings",
+        ),
+    ],
+)
+def test_load_chart_config_custom_token_audience_type_validation(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    conf_dir = tmp_path / "conf"
+    conf_dir.mkdir()
+    write_toml(
+        conf_dir,
+        "config.toml",
+        f"""\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        {field} = {value}
+        """,
+    )
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        load_test_configs(conf_dir)
+
+
+def test_load_chart_config_custom_token_audience_fields_are_mutually_exclusive(
+    tmp_path: Path,
+) -> None:
+    conf_dir = tmp_path / "conf"
+    conf_dir.mkdir()
+    write_toml(
+        conf_dir,
+        "config.toml",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        custom-token-audience = "vault"
+        custom-token-audiences = ["api"]
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot specify both 'custom-token-audience' and "
+        "'custom-token-audiences'",
+    ):
+        load_test_configs(conf_dir)
+
+
 def test_load_chart_config_unknown_field_raises(tmp_path: Path) -> None:
     """Unknown Helm fields should fail before generation."""
     conf_dir = tmp_path / "conf"
@@ -1358,6 +1462,7 @@ def test_resolve_configs_fills_in_chart_and_repo(tmp_path: Path) -> None:
         values=[],
         release="myapp",
         name_override="myapp-rendered",
+        custom_token_audiences=["vault"],
     )
     resolved = resolve_configs(manifest_configs(helm=[config]), _make_helmfile())
     assert len(all_configs(resolved)) == 1
@@ -1367,6 +1472,7 @@ def test_resolve_configs_fills_in_chart_and_repo(tmp_path: Path) -> None:
     assert resolved_config.repo == "https://charts.example.com"
     assert resolved_config.version == "1.2.3"
     assert resolved_config.name_override == "myapp-rendered"
+    assert resolved_config.custom_token_audiences == ["vault"]
 
 
 def test_resolve_configs_no_helmfile_raises_when_release_present(
