@@ -11,7 +11,6 @@ import yaml
 
 from manifest_builder.config import (
     DEFAULT_REPLICA_COUNT,
-    ManifestConfig,
     SimpleConfig,
     TemplateValue,
     parse_variables,
@@ -34,7 +33,7 @@ from manifest_builder.output import write_documents
 IAM_ROLE_ANNOTATION = "eks.amazonaws.com/role-arn"
 
 
-class SimpleConfigHandler(ConfigHandler):
+class SimpleConfigHandler(ConfigHandler[SimpleConfig]):
     """Generate manifests for simple configs."""
 
     def __init__(self, configs: Sequence[SimpleConfig] | None = None) -> None:
@@ -74,22 +73,14 @@ class SimpleConfigHandler(ConfigHandler):
     def iter_configs(self) -> list[SimpleConfig]:
         return self.configs
 
-    def validate(self, config: ManifestConfig, repo_root: Path) -> None:
-        if not isinstance(config, SimpleConfig):
-            raise TypeError(
-                f"SimpleConfigHandler cannot process {type(config).__name__}"
-            )
+    def validate(self, config: SimpleConfig, repo_root: Path) -> None:
         validate_simple_config(config)
 
     def generate(
         self,
-        config: ManifestConfig,
+        config: SimpleConfig,
         context: GenerationContext,
     ) -> set[Path]:
-        if not isinstance(config, SimpleConfig):
-            raise TypeError(
-                f"SimpleConfigHandler cannot process {type(config).__name__}"
-            )
         return generate_simple(
             config,
             context.output_dir,

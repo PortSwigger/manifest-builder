@@ -12,7 +12,6 @@ from pystache.common import MissingTags
 
 from manifest_builder.config import (
     CopyConfig,
-    ManifestConfig,
     parse_variables,
     validate_copy_config,
     validate_known_fields,
@@ -28,7 +27,7 @@ from manifest_builder.k8s import (
 from manifest_builder.output import write_documents
 
 
-class CopyConfigHandler(ConfigHandler):
+class CopyConfigHandler(ConfigHandler[CopyConfig]):
     """Generate manifests for copy configs."""
 
     def __init__(self, configs: Sequence[CopyConfig] | None = None) -> None:
@@ -64,18 +63,14 @@ class CopyConfigHandler(ConfigHandler):
     def iter_configs(self) -> list[CopyConfig]:
         return self.configs
 
-    def validate(self, config: ManifestConfig, repo_root: Path) -> None:
-        if not isinstance(config, CopyConfig):
-            raise TypeError(f"CopyConfigHandler cannot process {type(config).__name__}")
+    def validate(self, config: CopyConfig, repo_root: Path) -> None:
         validate_copy_config(config)
 
     def generate(
         self,
-        config: ManifestConfig,
+        config: CopyConfig,
         context: GenerationContext,
     ) -> set[Path]:
-        if not isinstance(config, CopyConfig):
-            raise TypeError(f"CopyConfigHandler cannot process {type(config).__name__}")
         return generate_copy(config, context.output_dir, images=context.images)
 
 

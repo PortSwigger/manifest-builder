@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 # Concurrent renders share the chart cache, whose download path is not atomic.
 _HELM_PULL_LOCK = Lock()
-_MAX_HELM_WORKERS = 8
 
 
 def plural(num: int, plural_form: str = "s") -> str:
@@ -53,8 +52,12 @@ class ManifestError(Exception):
         super().__init__(f"{type(cause).__name__}: {cause}")
 
 
-class HelmConfigHandler(ConfigHandler):
+class HelmConfigHandler(ConfigHandler[ChartConfig]):
     """Generate manifests for Helm chart configs."""
+
+    # Each chart renders into its own temporary directory, so renders may
+    # overlap. Chart cache downloads are serialized by _HELM_PULL_LOCK.
+    parallel_safe = True
 
     def __init__(self, configs: Sequence[ChartConfig] | None = None) -> None:
         self.configs = list(configs or [])
@@ -86,7 +89,7 @@ class HelmConfigHandler(ConfigHandler):
                 )
             )
 
-    def iter_configs(self) -> Sequence[ManifestConfig]:
+    def iter_configs(self) -> Sequence[ChartConfig]:
         return self.configs
 
     def resolve(self, helmfile: object | None) -> None:
@@ -158,18 +161,14 @@ class HelmConfigHandler(ConfigHandler):
 
         self.configs = resolved
 
-    def validate(self, config: ManifestConfig, repo_root: Path) -> None:
-        if not isinstance(config, ChartConfig):
-            raise TypeError(f"HelmConfigHandler cannot process {type(config).__name__}")
+    def validate(self, config: ChartConfig, repo_root: Path) -> None:
         validate_chart_config(config, repo_root)
 
     def generate(
         self,
-        config: ManifestConfig,
+        config: ChartConfig,
         context: GenerationContext,
     ) -> set[Path]:
-        if not isinstance(config, ChartConfig):
-            raise TypeError(f"HelmConfigHandler cannot process {type(config).__name__}")
         return _generate_helm_manifests(
             config,
             context.output_dir,
@@ -524,12 +523,14 @@ def _render_values_files(
 
 @dataclass(frozen=True)
 class _GenerationJob:
-    handler: ConfigHandler
+    # Each job pairs a handler with one of its own configs, an invariant
+    # established by _collect_generation_jobs().
+    handler: "ConfigHandler[Any]"
     config: ManifestConfig
 
 
 def _collect_generation_jobs(
-    handlers: Sequence[ConfigHandler],
+    handlers: "Sequence[ConfigHandler[Any]]",
 ) -> list[_GenerationJob]:
     """Pair each loaded config with exactly one registered handler."""
     all_configs = tuple(
@@ -558,7 +559,7 @@ def _collect_generation_jobs(
 
 
 def generate_manifests(
-    handlers: Sequence[ConfigHandler],
+    handlers: "Sequence[ConfigHandler[Any]]",
     output_dir: Path,
     repo_root: Path,
     *,
@@ -673,16 +674,16 @@ def generate_manifests(
             logger.error(f"✗ {config.name} ({config.namespace})")
             raise ManifestError(config.name, e) from e
 
-    grouped_jobs: list[tuple[ConfigHandler, list[_GenerationJob]]] = []
+    grouped_jobs: list[tuple[ConfigHandler[Any], list[_GenerationJob]]] = []
     for job in jobs:
         if not grouped_jobs or grouped_jobs[-1][0] is not job.handler:
             grouped_jobs.append((job.handler, []))
         grouped_jobs[-1][1].append(job)
 
     for handler, handler_jobs in grouped_jobs:
-        # Built-in Helm jobs are independent; custom handlers retain sequential calls.
-        if isinstance(handler, HelmConfigHandler) and len(handler_jobs) > 1:
-            worker_count = min(_MAX_HELM_WORKERS, len(handler_jobs))
+        # Handlers opt in to concurrent rendering; the rest stay sequential.
+        if handler.parallel_safe and len(handler_jobs) > 1:
+            worker_count = min(handler.max_workers, len(handler_jobs))
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 generated_paths = executor.map(generate_job, handler_jobs)
                 for job, paths in zip(handler_jobs, generated_paths, strict=True):

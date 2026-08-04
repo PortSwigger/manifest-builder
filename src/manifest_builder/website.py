@@ -10,7 +10,6 @@ import yaml
 
 from manifest_builder.config import (
     DEFAULT_REPLICA_COUNT,
-    ManifestConfig,
     WebsiteConfig,
     validate_known_fields,
     validate_website_config,
@@ -28,7 +27,7 @@ from manifest_builder.k8s import (
 from manifest_builder.output import write_documents
 
 
-class WebsiteConfigHandler(ConfigHandler):
+class WebsiteConfigHandler(ConfigHandler[WebsiteConfig]):
     """Generate manifests for website configs."""
 
     def __init__(self, configs: Sequence[WebsiteConfig] | None = None) -> None:
@@ -62,22 +61,14 @@ class WebsiteConfigHandler(ConfigHandler):
     def iter_configs(self) -> list[WebsiteConfig]:
         return self.configs
 
-    def validate(self, config: ManifestConfig, repo_root: Path) -> None:
-        if not isinstance(config, WebsiteConfig):
-            raise TypeError(
-                f"WebsiteConfigHandler cannot process {type(config).__name__}"
-            )
+    def validate(self, config: WebsiteConfig, repo_root: Path) -> None:
         validate_website_config(config)
 
     def generate(
         self,
-        config: ManifestConfig,
+        config: WebsiteConfig,
         context: GenerationContext,
     ) -> set[Path]:
-        if not isinstance(config, WebsiteConfig):
-            raise TypeError(
-                f"WebsiteConfigHandler cannot process {type(config).__name__}"
-            )
         return generate_website(
             config,
             context.output_dir,

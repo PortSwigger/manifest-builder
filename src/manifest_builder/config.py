@@ -6,7 +6,7 @@ import tomllib
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from manifest_builder.helmfile import Helmfile
 
@@ -229,9 +229,24 @@ class CopyConfig:
     variables: dict[str, TemplateValue] = field(default_factory=dict)
 
 
-type ManifestConfig = (
-    ChartConfig | WebsiteConfig | SimpleConfig | CopyConfig | PublicRepoConfig
-)
+class ManifestConfig(Protocol):
+    """What the generation orchestrator needs from any config block entry.
+
+    Structural rather than a union of the known config types, so a config
+    handler can bring its own dataclass without this module knowing about it.
+    Declared as read-only properties to let a config narrow ``namespace`` to
+    ``str`` when it always targets one.
+    """
+
+    @property
+    def name(self) -> str:
+        """Name of the config entry, used in logging and error messages."""
+
+    @property
+    def namespace(self) -> str | None:
+        """Target namespace, or None for configs that only emit cluster scope."""
+
+
 CONFIG_FILE_NAMES = ("config.toml", "manifest-builder.toml")
 
 
@@ -601,7 +616,8 @@ def validate_config(config: ManifestConfig, repo_root: Path) -> None:
     Validate an app configuration.
 
     Kept as a compatibility helper for callers that already have a concrete
-    config object. The main generation path uses config handlers instead.
+    config object. The main generation path uses config handlers instead, which
+    is the only route that reaches a config type defined outside this module.
     """
     if isinstance(config, WebsiteConfig):
         validate_website_config(config)
@@ -609,7 +625,12 @@ def validate_config(config: ManifestConfig, repo_root: Path) -> None:
         validate_simple_config(config)
     elif isinstance(config, CopyConfig):
         validate_copy_config(config)
+    elif isinstance(config, ChartConfig):
+        validate_chart_config(config, repo_root)
     elif isinstance(config, PublicRepoConfig):
         pass  # public-repo configs reference no local files
     else:
-        validate_chart_config(config, repo_root)
+        raise TypeError(
+            f"validate_config() does not know how to validate "
+            f"{type(config).__name__}; use its config handler instead"
+        )
