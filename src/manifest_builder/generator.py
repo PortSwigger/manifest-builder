@@ -2,8 +2,6 @@
 # SPDX-FileCopyrightText: The manifest-builder contributors
 """Manifest generation orchestration."""
 
-import hashlib
-import json
 import logging
 import tempfile
 from collections.abc import Sequence
@@ -14,23 +12,29 @@ from threading import Lock
 from typing import Any
 
 import pystache
-import yaml
 from pystache.common import MissingTags
 
 from manifest_builder.config import (
     ChartConfig,
     ManifestConfig,
     TemplateValue,
+    parse_variables,
     validate_chart_config,
     validate_known_fields,
 )
 from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.helm import ChartCacheStats, pull_chart, run_helm_template
+from manifest_builder.k8s import CLUSTER_SCOPED_KINDS, config_checksum
+from manifest_builder.output import (
+    dump_all_yaml,
+    dump_yaml,
+    load_all_yaml,
+    write_documents,
+    write_manifests,
+)
 
 logger = logging.getLogger(__name__)
 
-YAML_LOADER: type[yaml.SafeLoader] = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-YAML_DUMPER: type[yaml.Dumper] = getattr(yaml, "CDumper", yaml.Dumper)
 # Concurrent renders share the chart cache, whose download path is not atomic.
 _HELM_PULL_LOCK = Lock()
 _MAX_HELM_WORKERS = 8
@@ -70,7 +74,7 @@ class HelmConfigHandler(ConfigHandler):
         if not isinstance(data, list):
             raise ValueError(f"'helm' must be a list of tables in {source_file}")
 
-        variables = _parse_variables(root_config.get("variables"), source_file)
+        variables = parse_variables(root_config.get("variables"), source_file)
         for index, item in enumerate(data):
             if not isinstance(item, dict):
                 raise ValueError(
@@ -287,30 +291,6 @@ def _parse_chart_config_files(
     return config_files
 
 
-def _parse_variables(
-    data: object,
-    source_file: Path,
-) -> dict[str, TemplateValue]:
-    """Parse top-level variables for values file templating."""
-    if data is None:
-        return {}
-
-    if not isinstance(data, dict):
-        raise ValueError(f"'variables' must be a table in {source_file}")
-
-    variables: dict[str, TemplateValue] = {}
-    for key, value in data.items():
-        if not isinstance(key, str):
-            raise ValueError(f"Variable keys in {source_file} must be strings")
-        if not isinstance(value, str | int | float | bool):
-            raise ValueError(
-                f"Variable '{key}' in {source_file} must be a string, number, or boolean"
-            )
-        variables[key] = value
-
-    return variables
-
-
 def _get_helmfile_data(helmfile: object) -> tuple[dict[str, str], dict[str, Any]]:
     repositories = getattr(helmfile, "repositories")
     releases = getattr(helmfile, "releases")
@@ -339,57 +319,6 @@ def setup_logging(verbose: bool = False) -> None:
     root_logger = logging.getLogger()
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.DEBUG if verbose else logging.INFO)
-
-
-def _literal_str_representer(dumper: yaml.Dumper, data: str) -> yaml.Node:
-    """Represent multi-line strings using literal block scalar (|-) syntax."""
-    if "\n" in data:
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
-
-
-# Register the custom representer for multi-line strings.
-yaml.add_representer(str, _literal_str_representer, Dumper=YAML_DUMPER)
-
-
-def _load_all_yaml(content: str) -> list[Any]:
-    return [doc for doc in yaml.load_all(content, Loader=YAML_LOADER) if doc]
-
-
-def _dump_yaml(doc: Any, stream: Any) -> None:
-    yaml.dump(
-        doc,
-        stream,
-        Dumper=YAML_DUMPER,
-        default_flow_style=False,
-        sort_keys=False,
-        allow_unicode=True,
-    )
-
-
-# Kubernetes resource kinds that are cluster-scoped (not namespaced)
-CLUSTER_SCOPED_KINDS = {
-    "APIService",
-    "CertificateSigningRequest",
-    "ClusterRole",
-    "ClusterRoleBinding",
-    "ClusterProviderConfig",
-    "CSIDriver",
-    "CSINode",
-    "CustomResourceDefinition",
-    "FlowSchema",
-    "IngressClass",
-    "Namespace",
-    "Node",
-    "PersistentVolume",
-    "PriorityClass",
-    "PriorityLevelConfiguration",
-    "RuntimeClass",
-    "StorageClass",
-    "MutatingWebhookConfiguration",
-    "ValidatingWebhookConfiguration",
-    "VolumeAttachment",
-}
 
 
 def _generate_helm_manifests(
@@ -469,7 +398,7 @@ def _generate_helm_manifests(
 
     # Inject init container if configured
     if config.init:
-        docs = _load_all_yaml(manifest_content)
+        docs = load_all_yaml(manifest_content)
         deployments = [d for d in docs if d.get("kind") == "Deployment"]
         if len(deployments) != 1:
             raise ValueError(
@@ -507,50 +436,28 @@ def _generate_helm_manifests(
             init_container["volumeMounts"] = volume_mounts
         pod_spec["initContainers"] = [init_container]
         # Re-serialize; write_manifests will re-parse
-        import io
-
-        stream = io.StringIO()
-        yaml.dump_all(
-            docs,
-            stream,
-            Dumper=YAML_DUMPER,
-            default_flow_style=False,
-            sort_keys=False,
-            allow_unicode=True,
-        )
-        manifest_content = stream.getvalue()
+        manifest_content = dump_all_yaml(docs)
 
     configmap = None
     if config.config:
         configmap = _make_helm_configmap(
             helm_release_name, config.namespace, config.config
         )
-        checksum = _helm_config_checksum(configmap)
-        docs = _load_all_yaml(manifest_content)
+        checksum = config_checksum([configmap])
+        docs = load_all_yaml(manifest_content)
         for doc in docs:
             if doc.get("kind") in {"Deployment", "StatefulSet"}:
                 doc.setdefault("spec", {}).setdefault("template", {}).setdefault(
                     "metadata", {}
                 ).setdefault("annotations", {})["checksum/config"] = checksum
 
-        import io
-
-        stream = io.StringIO()
-        yaml.dump_all(
-            docs,
-            stream,
-            Dumper=YAML_DUMPER,
-            default_flow_style=False,
-            sort_keys=False,
-            allow_unicode=True,
-        )
-        manifest_content = stream.getvalue()
+        manifest_content = dump_all_yaml(docs)
 
     paths = write_manifests(manifest_content, output_dir, config.namespace, config.name)
 
     if configmap:
         paths.update(
-            _write_documents([configmap], output_dir, config.namespace, config.name)
+            write_documents([configmap], output_dir, config.namespace, config.name)
         )
 
     # Handle extra resources if configured
@@ -559,7 +466,7 @@ def _generate_helm_manifests(
         extra_docs: list[dict] = []
         for yaml_file in sorted(config.extra_resources.glob("*.yaml")):
             rendered = renderer.render(yaml_file.read_text(), values_context)
-            for doc in _load_all_yaml(rendered):
+            for doc in load_all_yaml(rendered):
                 # Add namespace to namespaced resources without one
                 kind = doc.get("kind")
                 if kind and kind not in CLUSTER_SCOPED_KINDS:
@@ -567,7 +474,7 @@ def _generate_helm_manifests(
                         doc.setdefault("metadata", {})["namespace"] = config.namespace
                 extra_docs.append(doc)
         if extra_docs:
-            extra_paths = _write_documents(
+            extra_paths = write_documents(
                 extra_docs, output_dir, config.namespace, config.name
             )
             paths.update(extra_paths)
@@ -594,18 +501,6 @@ def _make_helm_configmap(
             for config_key, local_path in sorted(config_files.items())
         },
     }
-
-
-def _helm_config_checksum(configmap: dict) -> str:
-    """Build a deterministic checksum for a Helm companion ConfigMap."""
-    normalized = {
-        "name": configmap["metadata"]["name"],
-        "data": {
-            key: value for key, value in sorted(configmap.get("data", {}).items())
-        },
-    }
-    payload = json.dumps([normalized], separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _render_values_files(
@@ -919,7 +814,7 @@ def _ensure_namespaces(
         }
         out_path = ns_dir / ns_filename
         with open(out_path, "w") as f:
-            _dump_yaml(doc, f)
+            dump_yaml(doc, f)
 
         logger.debug(f"Created Namespace {ns_name}")
         new_paths[out_path] = "__namespaces__"
@@ -1009,188 +904,3 @@ def _count_removed_files(
         if existing not in written_paths:
             removed += 1
     return removed
-
-
-def _make_k8s_name(name: str) -> str:
-    """Convert a name to a Kubernetes-safe name by replacing periods with dashes.
-
-    Kubernetes object names must conform to RFC 1035 label naming rules:
-    - Must be 63 characters or less
-    - Must begin with an alphanumeric character
-    - Must end with an alphanumeric character
-    - May contain only lowercase alphanumerics or hyphens
-
-    This converts names like 'example.com' to 'example-com'.
-
-    Args:
-        name: The original name (e.g., a domain name)
-
-    Returns:
-        A Kubernetes-safe name with periods replaced by dashes
-
-    Raises:
-        ValueError: If the resulting name violates RFC 1035 label naming constraints
-    """
-    k8s_name = name.replace(".", "-").lower()
-
-    # Validate against RFC 1035 label naming constraints
-    if not k8s_name:
-        raise ValueError(f"Name '{name}' results in an empty Kubernetes object name")
-
-    if len(k8s_name) > 63:
-        raise ValueError(
-            f"Kubernetes name '{k8s_name}' exceeds 63 character limit ({len(k8s_name)} characters)"
-        )
-
-    if not k8s_name[0].isalnum():
-        raise ValueError(
-            f"Kubernetes name '{k8s_name}' must start with an alphanumeric character, "
-            f"but starts with '{k8s_name[0]}'"
-        )
-
-    if not k8s_name[-1].isalnum():
-        raise ValueError(
-            f"Kubernetes name '{k8s_name}' must end with an alphanumeric character, "
-            f"but ends with '{k8s_name[-1]}'"
-        )
-
-    # Verify that only valid characters are present (lowercase alphanumeric and hyphens)
-    if not all(c.isalnum() or c == "-" for c in k8s_name):
-        invalid_chars = set(c for c in k8s_name if not (c.isalnum() or c == "-"))
-        raise ValueError(
-            f"Kubernetes name '{k8s_name}' contains invalid characters: {invalid_chars}. "
-            f"Only lowercase alphanumerics and hyphens are allowed."
-        )
-
-    return k8s_name
-
-
-def _strip_helm_from_metadata(metadata: dict) -> None:
-    for key in ("labels", "annotations"):
-        if key in metadata and metadata[key] is not None:
-            metadata[key] = {
-                k: v
-                for k, v in metadata[key].items()
-                if not k.startswith("helm.sh/")
-                and not (k == "app.kubernetes.io/managed-by" and v == "Helm")
-            }
-            if not metadata[key]:
-                del metadata[key]
-
-
-def strip_helm_metadata(doc: dict) -> dict:
-    """Remove helm-specific labels and annotations from a Kubernetes manifest."""
-    _strip_helm_from_metadata(doc.get("metadata") or {})
-    template_metadata = (doc.get("spec") or {}).get("template", {}).get("metadata")
-    if template_metadata:
-        _strip_helm_from_metadata(template_metadata)
-    return doc
-
-
-def _write_documents(
-    documents: list[dict],
-    output_dir: Path,
-    namespace: str | None,
-    app_name: str | None = None,
-) -> set[Path]:
-    written: set[Path] = set()
-    for doc in documents:
-        kind = doc.get("kind", "unknown")
-        name = doc.get("metadata", {}).get("name", "unknown")
-        try:
-            strip_helm_metadata(doc)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to strip helm metadata from {kind}/{name}: {e}"
-            ) from e
-
-        if not kind or not name:
-            continue
-
-        if kind in CLUSTER_SCOPED_KINDS:
-            subdir = "cluster"
-        else:
-            subdir = doc.get("metadata", {}).get("namespace") or namespace
-            if subdir is None:
-                raise ValueError(
-                    f"Cannot write namespaced resource {kind}/{name} without a namespace"
-                )
-        dest_dir = output_dir / subdir
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        filename = _manifest_filename(kind, name)
-        output_path = dest_dir / filename
-
-        with open(output_path, "w") as f:
-            if app_name:
-                f.write(f"# Source: {app_name}\n")
-            _dump_yaml(doc, f)
-
-        logger.debug(f"Wrote {subdir}/{filename}")
-        written.add(output_path)
-
-    return written
-
-
-def _manifest_filename(kind: str, name: str) -> str:
-    """Return a filesystem-safe manifest filename for a Kubernetes object."""
-    return f"{kind.lower()}-{name}.yaml".replace(":", "_")
-
-
-def write_manifests(
-    content: str,
-    output_dir: Path,
-    namespace: str,
-    app_name: str | None = None,
-) -> set[Path]:
-    """
-    Split YAML content into individual documents and write each to a separate file.
-
-    Files are named following the pattern: kind-name.yaml, written into
-    output_dir/<namespace>/ for namespaced resources or output_dir/cluster/
-    for cluster-scoped resources.
-
-    Args:
-        content: YAML manifest content with multiple documents
-        output_dir: Base output directory
-        namespace: Kubernetes namespace (used for namespaced resources)
-        app_name: If provided, written as a comment at the top of each file
-
-    Returns:
-        Set of paths written
-
-    Raises:
-        OSError: If files cannot be written
-    """
-    documents = _load_all_yaml(content)
-
-    # Filter out Helm test hook documents and log them
-    filtered_documents = []
-    skipped_hooks = 0
-    for doc in documents:
-        kind = doc.get("kind", "unknown")
-        annotations = doc.get("metadata", {}).get("annotations") or {}
-        if not isinstance(annotations, dict):
-            raise TypeError(
-                f"failed to read annotations on object {kind} from {app_name}, "
-                f"item annotations is not a dict"
-            )
-        hook_value = annotations.get("helm.sh/hook")
-        if hook_value is not None:
-            name = doc.get("metadata", {}).get("name")
-            skipped_hooks += 1
-            logger.debug(f"Skipping {kind} {name} (helm.sh/hook={hook_value})")
-        else:
-            filtered_documents.append(doc)
-    documents = filtered_documents
-    if skipped_hooks:
-        logger.info(f"Skipped {skipped_hooks} helm hook objects")
-
-    # Add namespace to namespaced resources that don't already have one
-    for doc in documents:
-        kind = doc.get("kind")
-        if kind and kind not in CLUSTER_SCOPED_KINDS:
-            if "namespace" not in doc.get("metadata", {}):
-                doc.setdefault("metadata", {})["namespace"] = namespace
-
-    return _write_documents(documents, output_dir, namespace, app_name)
