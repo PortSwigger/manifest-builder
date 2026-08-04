@@ -90,6 +90,13 @@ def _format_manifest_error(error: ManifestError, output_dir: Path) -> str:
     metavar="NAMESPACE",
     help="Declare and generate only one namespace-owned output tree",
 )
+@click.option(
+    "--target",
+    type=str,
+    default=None,
+    metavar="TARGET",
+    help="Target to generate, for a config directory that declares targets",
+)
 def main(
     config_dir: Path,
     output_dir: Path,
@@ -98,6 +105,7 @@ def main(
     allow_dirty_config: bool,
     vars_from: Path | None,
     namespace: str | None,
+    target: str | None,
 ) -> None:
     """Generate Kubernetes manifests from configuration input."""
     setup_logging(verbose=verbose)
@@ -114,6 +122,7 @@ def main(
             allow_dirty_config=allow_dirty_config,
             vars_from=vars_from,
             namespace=namespace,
+            target=target,
         )
 
     except ManifestError as e:

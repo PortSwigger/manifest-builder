@@ -33,6 +33,7 @@ def test_main_delegates_to_generate(
         allow_dirty_config=False,
         vars_from=None,
         namespace=None,
+        target=None,
     )
 
 
@@ -55,6 +56,7 @@ def test_main_passes_vars_from(
         allow_dirty_config=False,
         vars_from=Path("extra.toml"),
         namespace=None,
+        target=None,
     )
 
 
@@ -77,6 +79,30 @@ def test_main_passes_namespace(
         allow_dirty_config=False,
         vars_from=None,
         namespace="team-a",
+        target=None,
+    )
+
+
+@mock.patch("manifest_builder.cli.generate")
+@mock.patch("manifest_builder.cli.get_helm_version", return_value="v3.0.0")
+def test_main_passes_target(
+    mock_get_helm_version: mock.Mock,
+    mock_generate: mock.Mock,
+) -> None:
+    """The --target option is forwarded to generate()."""
+    result = CliRunner().invoke(main, ["--target", "platform-dev"])
+
+    assert result.exit_code == 0
+    mock_get_helm_version.assert_called_once_with()
+    mock_generate.assert_called_once_with(
+        Path("conf"),
+        Path("output"),
+        verbose=False,
+        create_commit=False,
+        allow_dirty_config=False,
+        vars_from=None,
+        namespace=None,
+        target="platform-dev",
     )
 
 

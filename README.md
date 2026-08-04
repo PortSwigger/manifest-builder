@@ -48,6 +48,82 @@ with the `[variables]` table in `config.toml` just like values loaded with
 generate(Path("conf"), Path("output"), vars={"domain": "example.com"})
 ```
 
+## Targets and sections
+
+A configuration directory comes in one of two layouts, told apart by the
+`version` field of its top-level `config.toml`.
+
+By default, or with `version = 1`, `config.toml` declares the config blocks
+directly.
+
+With `version = 2`, `config.toml` declares **targets** instead. A target names
+the **sections** it is built from, and carries the variables those sections are
+rendered with. This lets one configuration directory describe several
+deployments of the same sections:
+
+```toml
+version = 2
+
+[[target]]
+name = "platform-dev"
+sections = ["base", "platform"]
+[target.vars]
+cluster_name = "platform-dev"
+vanity_domain = "portswigger.com"
+
+[[target]]
+name = "platform-prod"
+sections = ["base", "platform"]
+[target.vars]
+cluster_name = "platform-prod"
+vanity_domain = "portswigger.net"
+```
+
+A section is a subdirectory of the configuration directory holding a
+`section.toml` of blocks — the same content a `version = 1` `config.toml` would
+hold:
+
+```
+conf/
+├── config.toml          # targets only
+├── base/
+│   ├── section.toml     # [[helm]], [[simple]], … blocks
+│   └── argocd/
+│       └── values.yaml
+├── platform/
+│   ├── section.toml
+│   └── idcat/
+│       └── idcat.toml
+├── images.toml
+├── releases.yaml
+├── owners/
+└── plugins/
+```
+
+Which target to generate is selected with `--target`, and is required for a
+`version = 2` directory:
+
+```bash
+manifest-builder --config-dir conf --output-dir output --target platform-dev
+```
+
+Notes:
+
+- A section's blocks are read from that section's own `section.toml`, so the
+  paths they reference resolve inside the section directory. In the layout
+  above, `base/section.toml` refers to its values file as `argocd/values.yaml`.
+  Two sections can therefore use the same relative path without colliding.
+- A section file may also be named `config.toml` or `manifest-builder.toml`, so
+  moving an existing top-level config file into a section directory works
+  unchanged. `section.toml` wins if more than one is present.
+- A section may add a `[variables]` table of its own. It is merged with the
+  target's `vars`, as are variables from `--vars-from` and `generate(vars=...)`.
+  A variable defined by more than one of these is an error rather than one
+  silently winning.
+- `images.toml`, `releases.yaml`, `owners/`, and `plugins/` stay at the top of
+  the configuration directory and are shared by every target.
+- Only the sections the selected target names are loaded.
+
 ## Image template variables
 
 Shared container image definitions can be placed in `images.toml` in the

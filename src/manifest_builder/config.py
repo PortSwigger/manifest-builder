@@ -4,6 +4,7 @@
 
 import tomllib
 from collections.abc import Collection
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -154,6 +155,210 @@ class ManifestConfig(Protocol):
 
 
 CONFIG_FILE_NAMES = ("config.toml", "manifest-builder.toml")
+
+#: Names a section directory's config file may take. ``section.toml`` is the
+#: canonical one, and says plainly that the file is part of a larger config
+#: directory rather than the top of one. The top-level names are also accepted,
+#: since a section holds what a top-level config file used to.
+SECTION_FILE_NAMES = ("section.toml", *CONFIG_FILE_NAMES)
+
+#: Config directory layout in which the top-level file declares config blocks
+#: directly. Assumed when the top-level file states no ``version``.
+BLOCKS_VERSION = 1
+
+#: Config directory layout in which the top-level file declares targets, and the
+#: config blocks live in per-section subdirectories.
+TARGETS_VERSION = 2
+
+
+@dataclass(frozen=True)
+class Target:
+    """A named set of sections rendered together with one set of variables.
+
+    Targets let one config directory describe several deployments of the same
+    sections: each names the section directories it is built from, and carries
+    the variables those sections are rendered with.
+    """
+
+    name: str
+    sections: tuple[str, ...]
+    variables: dict[str, TemplateValue]
+
+
+def find_config_file(
+    config_dir: Path, names: Collection[str] = CONFIG_FILE_NAMES
+) -> Path:
+    """Return the first of ``names`` that exists in a config directory.
+
+    Raises:
+        FileNotFoundError: If the directory holds none of ``names``.
+    """
+    for name in names:
+        candidate = config_dir / name
+        if candidate.exists():
+            return candidate
+
+    expected = " or ".join(str(config_dir / name) for name in names)
+    raise FileNotFoundError(f"Configuration file not found: {expected}")
+
+
+def config_version(data: dict, source_file: Path) -> int:
+    """Return the declared config directory layout version.
+
+    A file that states no ``version`` declares config blocks directly, the
+    layout that predates targets.
+    """
+    version = data.get("version", BLOCKS_VERSION)
+    # bool is an int subclass, and `version = true` is not a version.
+    if isinstance(version, bool) or version not in (BLOCKS_VERSION, TARGETS_VERSION):
+        raise ValueError(
+            f"Unsupported config version {version!r} in {source_file}: "
+            f"expected {BLOCKS_VERSION} or {TARGETS_VERSION}"
+        )
+    return version
+
+
+def parse_targets(data: dict, source_file: Path) -> list[Target]:
+    """Parse the ``[[target]]`` entries of a targets-style top-level config."""
+    raw_targets = data.get("target")
+    if raw_targets is None:
+        raise ValueError(f"No [[target]] entries found in {source_file}")
+    if not isinstance(raw_targets, list):
+        raise ValueError(f"'target' must be a list of tables in {source_file}")
+
+    targets: list[Target] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw_targets):
+        if not isinstance(item, dict):
+            raise ValueError(f"Each [[target]] entry must be a table in {source_file}")
+        target = _parse_target(item, source_file, index)
+        if target.name in seen:
+            raise ValueError(f"Duplicate target '{target.name}' in {source_file}")
+        seen.add(target.name)
+        targets.append(target)
+
+    return targets
+
+
+def _parse_target(data: dict, source_file: Path, table_index: int) -> Target:
+    """Parse one ``[[target]]`` entry."""
+    validate_known_fields(
+        "[[target]]", data, {"name", "sections", "vars"}, source_file, table_index
+    )
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError(
+            f"Each [[target]] entry must set a non-empty 'name' in {source_file}"
+        )
+
+    return Target(
+        name=name,
+        sections=_parse_sections(data.get("sections"), name, source_file),
+        variables=parse_variables(data.get("vars"), source_file),
+    )
+
+
+def _parse_sections(
+    data: object, target_name: str, source_file: Path
+) -> tuple[str, ...]:
+    """Parse a target's ``sections`` field into validated section names."""
+    if data is None:
+        raise ValueError(f"Target '{target_name}' in {source_file} must set 'sections'")
+
+    raw_names = [data] if isinstance(data, str) else data
+    if not isinstance(raw_names, list):
+        raise ValueError(
+            f"'sections' must be a string or list of strings for target "
+            f"'{target_name}' in {source_file}"
+        )
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for name in raw_names:
+        if not isinstance(name, str):
+            raise ValueError(
+                f"'sections' must be a string or list of strings for target "
+                f"'{target_name}' in {source_file}"
+            )
+        # A section names a directory in the config directory, so anything that
+        # could reach outside it, or hide, is rejected rather than resolved.
+        if not name or name.startswith(".") or Path(name).parts != (name,):
+            raise ValueError(
+                f"Invalid section name {name!r} for target '{target_name}' in "
+                f"{source_file}: a section is a directory in the config directory"
+            )
+        if name in seen:
+            raise ValueError(
+                f"Target '{target_name}' in {source_file} lists section "
+                f"'{name}' more than once"
+            )
+        seen.add(name)
+        names.append(name)
+
+    if not names:
+        raise ValueError(
+            f"Target '{target_name}' in {source_file} must list at least one section"
+        )
+
+    return tuple(names)
+
+
+def select_target(targets: list[Target], name: str | None, source_file: Path) -> Target:
+    """Pick the requested target, reporting what is on offer when it is absent."""
+    available = ", ".join(repr(target.name) for target in targets)
+    if name is None:
+        raise ValueError(
+            f"{source_file} declares targets, so one must be selected. "
+            f"Available targets: {available}"
+        )
+
+    for target in targets:
+        if target.name == name:
+            return target
+
+    raise ValueError(
+        f"Unknown target '{name}' in {source_file}. Available targets: {available}"
+    )
+
+
+def find_section_config_file(
+    config_dir: Path, section: str, target_name: str, source_file: Path
+) -> Path:
+    """Return the config file of one section directory."""
+    section_dir = config_dir / section
+    if not section_dir.is_dir():
+        raise FileNotFoundError(
+            f"Section directory not found for target '{target_name}': {section_dir} "
+            f"(referenced in {source_file})"
+        )
+
+    try:
+        return find_config_file(section_dir, SECTION_FILE_NAMES)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"{e} for section '{section}'") from e
+
+
+def merge_variables(
+    base: dict[str, TemplateValue],
+    base_description: str,
+    extra: dict[str, TemplateValue],
+    extra_description: str,
+) -> dict[str, TemplateValue]:
+    """Merge two variable tables, rejecting names that both define.
+
+    Neither source wins a name defined twice: a variable with two competing
+    values is a config mistake worth reporting rather than resolving.
+    """
+    overlap = sorted(set(base) & set(extra))
+    if overlap:
+        names = ", ".join(repr(name) for name in overlap)
+        suffix = "s" if len(overlap) != 1 else ""
+        raise ValueError(
+            f"Variable{suffix} {names} defined in both {base_description} "
+            f"and {extra_description}"
+        )
+    return {**base, **extra}
 
 
 def load_images(config_dir: Path) -> dict[str, str]:
@@ -315,30 +520,44 @@ def load_configs(
     extra_variables: dict[str, TemplateValue] | None = None,
     default_namespace: str | None = None,
     default_image: str | None = None,
+    target: str | None = None,
 ) -> "Sequence[ConfigHandler]":
     """
     Load app configurations from the config directory.
 
     The top-level TOML config file may be named ``config.toml`` or
-    ``manifest-builder.toml`` and may contain top-level tables owned by the
-    supplied config handlers.
+    ``manifest-builder.toml``. It comes in two layouts, told apart by its
+    ``version`` field:
+
+    ``version = 1``, or no ``version`` at all, declares config blocks directly
+    as top-level tables owned by the supplied config handlers.
+
+    ``version = 2`` instead declares ``[[target]]`` entries. Each target names
+    the sections it is built from and the variables they are rendered with, and
+    each section is a subdirectory of ``config_dir`` holding a config file of
+    blocks. Since a section's blocks are read from the section's own config
+    file, the paths they reference resolve inside the section directory.
 
     Args:
         config_dir: Directory containing TOML configuration files
         handlers: Config handlers to populate
         extra_variables: Additional template variables merged into the
-            ``[variables]`` table from the config file. Keys that overlap with
-            ``[variables]`` in the config file are rejected with ValueError.
+            variables a config block is rendered with. Keys that overlap with
+            variables from the config directory are rejected with ValueError.
         default_namespace: Namespace to use when a config entry omits its
             ``namespace`` field.
         default_image: Image to use for namespace-mode simple and website
             config entries that omit their ``image`` field.
+        target: Name of the target to load, for a ``version = 2`` config
+            directory. Required for those, and rejected for the older layout,
+            which has no targets to choose between.
 
     Returns:
         Handlers populated with the config items they own
 
     Raises:
-        FileNotFoundError: If config_dir or a top-level config file doesn't exist
+        FileNotFoundError: If config_dir, a top-level config file, or a
+            referenced section doesn't exist
         ValueError: If TOML is invalid or missing required fields
     """
     if not config_dir.exists():
@@ -347,33 +566,8 @@ def load_configs(
     if not config_dir.is_dir():
         raise ValueError(f"Configuration path is not a directory: {config_dir}")
 
-    toml_file = next(
-        (
-            config_dir / name
-            for name in CONFIG_FILE_NAMES
-            if (config_dir / name).exists()
-        ),
-        None,
-    )
-    if toml_file is None:
-        expected = " or ".join(str(config_dir / name) for name in CONFIG_FILE_NAMES)
-        raise FileNotFoundError(f"Configuration file not found: {expected}")
-
+    toml_file = find_config_file(config_dir)
     data = load_toml_file(toml_file)
-
-    if extra_variables:
-        existing = data.get("variables", {})
-        if not isinstance(existing, dict):
-            raise ValueError(f"'variables' must be a table in {toml_file}")
-        overlap = sorted(set(existing) & set(extra_variables))
-        if overlap:
-            names = ", ".join(repr(name) for name in overlap)
-            suffix = "s" if len(overlap) != 1 else ""
-            raise ValueError(
-                f"Variable{suffix} {names} defined in both {toml_file} "
-                "and the --vars-from file"
-            )
-        data["variables"] = {**existing, **extra_variables}
 
     handler_by_name: dict[str, ConfigHandler] = {}
     for handler in handlers:
@@ -384,7 +578,110 @@ def load_configs(
     if not handler_by_name:
         raise ValueError("No config handlers registered")
 
-    allowed_top_level = set(handler_by_name) | {"variables"}
+    if config_version(data, toml_file) == TARGETS_VERSION:
+        _load_target_sections(
+            config_dir,
+            toml_file,
+            data,
+            handler_by_name,
+            target,
+            extra_variables,
+            default_namespace,
+            default_image,
+        )
+        return handlers
+
+    if target is not None:
+        raise ValueError(
+            f"Cannot select target '{target}': {toml_file} declares config blocks "
+            f"directly rather than version = {TARGETS_VERSION} targets"
+        )
+
+    variables = merge_variables(
+        parse_variables(data.get("variables"), toml_file),
+        str(toml_file),
+        extra_variables or {},
+        "the --vars-from file",
+    )
+    _load_config_blocks(
+        toml_file,
+        data,
+        handler_by_name,
+        variables,
+        default_namespace,
+        default_image,
+        extra_allowed_fields={"version"},
+    )
+
+    return handlers
+
+
+def _load_target_sections(
+    config_dir: Path,
+    toml_file: Path,
+    data: dict,
+    handler_by_name: "dict[str, ConfigHandler]",
+    target: str | None,
+    extra_variables: dict[str, TemplateValue] | None,
+    default_namespace: str | None,
+    default_image: str | None,
+) -> None:
+    """Load the config blocks of every section a selected target names."""
+    unknown_top_level = sorted(set(data) - {"version", "target"})
+    if unknown_top_level:
+        fields = ", ".join(
+            _format_field_location(field, toml_file) for field in unknown_top_level
+        )
+        suffix = "s" if len(unknown_top_level) != 1 else ""
+        raise ValueError(
+            f"Unknown top-level field{suffix}: {fields} in {toml_file}. A "
+            f"version = {TARGETS_VERSION} config file declares only targets; "
+            "config blocks belong in a section directory"
+        )
+
+    selected = select_target(parse_targets(data, toml_file), target, toml_file)
+    target_description = f"target '{selected.name}' in {toml_file}"
+
+    for section in selected.sections:
+        section_file = find_section_config_file(
+            config_dir, section, selected.name, toml_file
+        )
+        section_data = load_toml_file(section_file)
+
+        variables = merge_variables(
+            selected.variables,
+            target_description,
+            parse_variables(section_data.get("variables"), section_file),
+            str(section_file),
+        )
+        variables = merge_variables(
+            variables,
+            "the config directory",
+            extra_variables or {},
+            "the --vars-from file",
+        )
+
+        _load_config_blocks(
+            section_file,
+            section_data,
+            handler_by_name,
+            variables,
+            default_namespace,
+            default_image,
+        )
+
+
+def _load_config_blocks(
+    toml_file: Path,
+    data: dict,
+    handler_by_name: "dict[str, ConfigHandler]",
+    variables: dict[str, TemplateValue],
+    default_namespace: str | None,
+    default_image: str | None,
+    extra_allowed_fields: Collection[str] = (),
+) -> None:
+    """Hand the config blocks in one TOML file to the handlers that own them."""
+    allowed_top_level = set(handler_by_name) | {"variables"} | set(extra_allowed_fields)
     unknown_top_level = sorted(set(data) - allowed_top_level)
     if unknown_top_level:
         fields = ", ".join(
@@ -398,12 +695,13 @@ def load_configs(
         expected = ", ".join(f"[[{name}]]" for name in sorted(handler_by_name))
         raise ValueError(f"No {expected} entries found in {toml_file}")
 
+    # Hand handlers the resolved variables, so a block is rendered with its
+    # target's and section's variables regardless of which file declared them.
+    data["variables"] = variables
     for name in present_handler_names:
         handler_by_name[name].load_config(
             data[name], toml_file, data, default_namespace, default_image
         )
-
-    return handlers
 
 
 def resolve_configs(

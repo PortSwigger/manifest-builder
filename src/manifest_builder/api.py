@@ -50,6 +50,7 @@ def generate(
     namespace: str | None = None,
     image: str | None = None,
     vars: Mapping[str, TemplateValue] | None = None,
+    target: str | None = None,
 ) -> GenerationResult:
     """Generate manifests from ``config`` into ``output``.
 
@@ -77,6 +78,9 @@ def generate(
         vars: Optional extra template variables, merged into the ``[variables]``
             table from config.toml the same way as variables loaded with
             ``vars_from``.
+        target: Name of the target to generate, for a ``version = 2`` config
+            directory. Required for those, and rejected for a config directory
+            that declares config blocks directly.
 
     Returns:
         Summary of written paths and object-level changes.
@@ -128,6 +132,7 @@ def generate(
         extra_variables=extra_variables,
         default_namespace=namespace,
         default_image=image if namespace is not None else None,
+        target=target,
     )
     handlers = resolve_configs(handlers, helmfile_data)
 
