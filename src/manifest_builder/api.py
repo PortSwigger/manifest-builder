@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from manifest_builder import __version__
+from manifest_builder.discovery import discover_handlers
 from manifest_builder.config import (
     TemplateValue,
     load_configs,
@@ -18,8 +19,6 @@ from manifest_builder.config import (
     load_toml_file,
     resolve_configs,
 )
-from manifest_builder.blocks.copy import CopyConfigHandler
-from manifest_builder.blocks.helm import HelmConfigHandler
 from manifest_builder.generator import generate_manifests, plural
 from manifest_builder.git_utils import (
     GitManifestChanges,
@@ -34,10 +33,7 @@ from manifest_builder.git_utils import (
 )
 from manifest_builder.helmfile import load_helmfile
 from manifest_builder.output import dump_yaml, load_all_yaml
-from manifest_builder.blocks.public_repo import PublicRepoConfigHandler
 from manifest_builder.result import GenerationResult, KubernetesObjectRef
-from manifest_builder.blocks.simple import SimpleConfigHandler
-from manifest_builder.blocks.website import WebsiteConfigHandler
 
 logger = logging.getLogger(__name__)
 DEPLOY_ID_ANNOTATION = "noa.re/deploy-id"
@@ -118,13 +114,14 @@ def generate(
         count = len(helmfile_data.releases)
         logger.info("Loaded releases.yaml: %d release%s", count, plural(count))
 
-    handlers = [
-        HelmConfigHandler(),
-        WebsiteConfigHandler(),
-        SimpleConfigHandler(),
-        CopyConfigHandler(),
-        PublicRepoConfigHandler(),
-    ]
+    handlers = discover_handlers(config)
+    if verbose:
+        logger.info(
+            "Discovered %d config handler%s: %s",
+            len(handlers),
+            plural(len(handlers)),
+            ", ".join(handler.top_level_config_name() for handler in handlers),
+        )
     handlers = load_configs(
         config,
         handlers,
