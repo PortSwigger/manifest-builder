@@ -33,8 +33,14 @@ def generate(
     *,
     vars_from: Path | None = None,
     vars: Mapping[str, TemplateValue] | None = None,
+    target: str | None = None,
 ) -> GenerationResult:
-    """Generate manifests from ``config`` into ``output``."""
+    """Generate manifests from ``config`` into ``output``.
+
+    ``target`` names the target to generate, for a ``version = 2`` config
+    directory. See :func:`manifest_builder.api.generate` for the full argument
+    documentation.
+    """
     # Keep this wrapper lazy: api imports __version__ from this module.
     from manifest_builder.api import generate as api_generate
 
@@ -49,6 +55,7 @@ def generate(
         namespace=namespace,
         image=image,
         vars=vars,
+        target=target,
     )
 
 
