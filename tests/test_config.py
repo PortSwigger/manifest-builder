@@ -12,23 +12,19 @@ import pytest
 from manifest_builder.handlers import ConfigHandler
 from manifest_builder.config import (
     DEFAULT_REPLICA_COUNT,
-    ChartConfig,
-    CopyConfig,
     ManifestConfig,
-    SimpleConfig,
-    WebsiteConfig,
     load_configs,
     load_extra_variables,
     load_images,
     load_owned_namespaces,
     resolve_configs,
 )
-from manifest_builder.copy import CopyConfigHandler
-from manifest_builder.generator import HelmConfigHandler
+from manifest_builder.blocks.copy import CopyConfig, CopyConfigHandler
+from manifest_builder.blocks.helm import ChartConfig, HelmConfigHandler
 from manifest_builder.helmfile import Helmfile, HelmfileRelease, HelmfileRepository
-from manifest_builder.public_repo import PublicRepoConfigHandler
-from manifest_builder.simple import SimpleConfigHandler
-from manifest_builder.website import WebsiteConfigHandler
+from manifest_builder.blocks.public_repo import PublicRepoConfigHandler
+from manifest_builder.blocks.simple import SimpleConfig, SimpleConfigHandler
+from manifest_builder.blocks.website import WebsiteConfig, WebsiteConfigHandler
 
 
 def write_toml(directory: Path, name: str, content: str) -> Path:

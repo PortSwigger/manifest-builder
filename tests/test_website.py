@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from manifest_builder.config import WebsiteConfig
+from manifest_builder.blocks.website import WebsiteConfig
 from manifest_builder.generator import ManifestError, generate_manifests
-from manifest_builder.website import WebsiteConfigHandler, generate_website
+from manifest_builder.blocks.website import WebsiteConfigHandler, generate_website
 
 SIMPLE_DEPLOYMENT = """\
 apiVersion: apps/v1
@@ -257,7 +257,7 @@ def test_generate_manifests_detects_output_file_conflicts(tmp_path: Path) -> Non
     import unittest.mock as mock
 
     with mock.patch(
-        "manifest_builder.website.generate_website",
+        "manifest_builder.blocks.website.generate_website",
         side_effect=[
             {
                 tmp_path / "output" / "ns1" / "deployment-app.yaml"

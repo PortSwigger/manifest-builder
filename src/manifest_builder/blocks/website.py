@@ -3,6 +3,7 @@
 """Website manifest generation from Mustache templates."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +11,7 @@ import yaml
 
 from manifest_builder.config import (
     DEFAULT_REPLICA_COUNT,
-    WebsiteConfig,
     validate_known_fields,
-    validate_website_config,
 )
 from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.k8s import (
@@ -25,6 +24,39 @@ from manifest_builder.k8s import (
     secret_name_from_mount_path,
 )
 from manifest_builder.output import write_documents
+
+
+@dataclass
+class WebsiteConfig:
+    """Configuration for a website app built from bundled YAML templates."""
+
+    name: str
+    namespace: str
+    hugo_repo: str | None = None
+    image: str | None = None
+    args: str | list[str] | None = None
+    env: dict[str, str] | None = None  # environment variable name -> value
+    emptydir_path: str | None = None  # ephemeral writable mount path
+    config: dict[str, Path] | None = None  # container path -> resolved local path
+    extra_hostnames: str | list[str] | None = (
+        None  # additional hostnames for certificates/listeners
+    )
+    external_secrets: list[str] | None = (
+        None  # mount paths for external secrets (e.g., ["/email-password"])
+    )
+    custom_token_audiences: list[str] | None = None
+    persistence: dict[str, str] | None = None  # mount path -> storage request size
+    replicas: int = DEFAULT_REPLICA_COUNT  # number of deployment replicas
+
+
+def validate_website_config(config: WebsiteConfig) -> None:
+    """Validate a website app configuration."""
+    for container_path, local_path in (config.config or {}).items():
+        if not local_path.exists():
+            raise ValueError(
+                f"Config file not found for '{config.name}': {local_path} "
+                f"(mapped from {container_path})"
+            )
 
 
 class WebsiteConfigHandler(ConfigHandler[WebsiteConfig]):
