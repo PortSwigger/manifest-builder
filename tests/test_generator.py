@@ -12,13 +12,12 @@ import pytest
 import yaml
 from pystache.context import KeyNotFoundError
 
-from manifest_builder.config import ChartConfig
-from manifest_builder.generator import (
+from manifest_builder.blocks.helm import (
+    ChartConfig,
     HelmConfigHandler,
-    _ensure_namespaces,
     _generate_helm_manifests,
-    generate_manifests,
 )
+from manifest_builder.generator import _ensure_namespaces, generate_manifests
 from manifest_builder.k8s import make_k8s_name
 from manifest_builder.output import strip_helm_metadata, write_manifests
 
@@ -195,7 +194,7 @@ def test_generate_manifests_summarizes_chart_cache(
     caplog.set_level(logging.INFO, logger="manifest_builder.generator")
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template", return_value=NAMESPACED_YAML
+        "manifest_builder.blocks.helm.run_helm_template", return_value=NAMESPACED_YAML
     ):
         generate_manifests(
             [HelmConfigHandler([config])],
@@ -250,8 +249,10 @@ data: {{}}
 """
 
     with (
-        mock.patch("manifest_builder.generator.pull_chart", side_effect=pull),
-        mock.patch("manifest_builder.generator.run_helm_template", side_effect=render),
+        mock.patch("manifest_builder.blocks.helm.pull_chart", side_effect=pull),
+        mock.patch(
+            "manifest_builder.blocks.helm.run_helm_template", side_effect=render
+        ),
     ):
         written = generate_manifests(
             [HelmConfigHandler(configs)],
@@ -308,7 +309,7 @@ def test_generate_manifests_preserves_files_in_owned_namespace(tmp_path: Path) -
     )
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template", return_value=NAMESPACED_YAML
+        "manifest_builder.blocks.helm.run_helm_template", return_value=NAMESPACED_YAML
     ):
         written = generate_manifests(
             [HelmConfigHandler([config])],
@@ -356,7 +357,7 @@ data: {}
     with (
         caplog.at_level(logging.DEBUG, logger="manifest_builder.generator"),
         mock.patch(
-            "manifest_builder.generator.run_helm_template", return_value=manifest
+            "manifest_builder.blocks.helm.run_helm_template", return_value=manifest
         ),
     ):
         written = generate_manifests(
@@ -402,7 +403,7 @@ data: {}
 """
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template", return_value=intrusive_yaml
+        "manifest_builder.blocks.helm.run_helm_template", return_value=intrusive_yaml
     ):
         with pytest.raises(ValueError, match="owned by another service"):
             generate_manifests(
@@ -714,7 +715,7 @@ def test_generate_helm_manifests_uses_name_override(tmp_path: Path) -> None:
     )
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template", return_value=""
+        "manifest_builder.blocks.helm.run_helm_template", return_value=""
     ) as run_helm_template:
         paths = _generate_helm_manifests(
             config, tmp_path / "output", tmp_path / "charts"
@@ -770,11 +771,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value=templated_manifest,
         ),
     ):
@@ -827,11 +828,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value="",
         ),
     ):
@@ -889,11 +890,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value=deployment_yaml,
         ),
     ):
@@ -968,11 +969,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value=two_deployments,
         ),
     ):
@@ -1018,11 +1019,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value=service_yaml,
         ),
     ):
@@ -1071,11 +1072,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value=deployment_yaml,
         ),
     ):
@@ -1125,11 +1126,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value=deployment_yaml,
         ),
     ):
@@ -1175,11 +1176,11 @@ spec:
 
     with (
         mock.patch(
-            "manifest_builder.generator.pull_chart",
+            "manifest_builder.blocks.helm.pull_chart",
             return_value=chart_dir,
         ),
         mock.patch(
-            "manifest_builder.generator.run_helm_template",
+            "manifest_builder.blocks.helm.run_helm_template",
             return_value=deployment_yaml,
         ),
     ):
@@ -1240,7 +1241,7 @@ spec:
 """
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template",
+        "manifest_builder.blocks.helm.run_helm_template",
         return_value=deployment_yaml,
     ):
         paths = _generate_helm_manifests(config, output_dir, charts_dir)
@@ -1307,7 +1308,7 @@ def test_name_overrides_avoid_helm_configmap_collisions(tmp_path: Path) -> None:
     ]
     output_dir = tmp_path / "output"
 
-    with mock.patch("manifest_builder.generator.run_helm_template", return_value=""):
+    with mock.patch("manifest_builder.blocks.helm.run_helm_template", return_value=""):
         paths = generate_manifests(
             [HelmConfigHandler(configs)],
             output_dir,
@@ -1357,7 +1358,7 @@ spec:
 """
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template",
+        "manifest_builder.blocks.helm.run_helm_template",
         return_value=deployment_yaml,
     ):
         _generate_helm_manifests(config, tmp_path / "first", tmp_path / "charts")
@@ -1415,7 +1416,7 @@ def test_generate_helm_manifests_renders_values_files_with_variables(
         return ""
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template",
+        "manifest_builder.blocks.helm.run_helm_template",
         side_effect=fake_run_helm_template,
     ):
         paths = _generate_helm_manifests(config, output_dir, charts_dir)
@@ -1479,7 +1480,7 @@ def test_generate_helm_manifests_renders_extra_resources_with_variables(
     charts_dir = tmp_path / "charts"
 
     with mock.patch(
-        "manifest_builder.generator.run_helm_template",
+        "manifest_builder.blocks.helm.run_helm_template",
         return_value="",
     ):
         _generate_helm_manifests(config, output_dir, charts_dir)

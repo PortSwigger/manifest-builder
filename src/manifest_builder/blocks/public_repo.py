@@ -3,6 +3,7 @@
 """Public ECR repository manifest generation from bundled Mustache templates."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,6 @@ import yaml
 from pystache.common import MissingTags
 
 from manifest_builder.config import (
-    PublicRepoConfig,
     TemplateValue,
     parse_variables,
     validate_known_fields,
@@ -19,6 +19,16 @@ from manifest_builder.config import (
 from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.k8s import CLUSTER_SCOPED_KINDS
 from manifest_builder.output import write_documents
+
+
+@dataclass
+class PublicRepoConfig:
+    """Configuration for a public ECR repository with GitHub Actions publish access."""
+
+    name: str
+    namespace: str
+    enable_charts: bool = False  # also create a charts/<name> repository
+    variables: dict[str, TemplateValue] = field(default_factory=dict)
 
 
 class PublicRepoConfigHandler(ConfigHandler[PublicRepoConfig]):

@@ -4,6 +4,7 @@
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -11,11 +12,9 @@ import yaml
 
 from manifest_builder.config import (
     DEFAULT_REPLICA_COUNT,
-    SimpleConfig,
     TemplateValue,
     parse_variables,
     validate_known_fields,
-    validate_simple_config,
 )
 from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.k8s import (
@@ -28,6 +27,56 @@ from manifest_builder.k8s import (
     secret_name_from_mount_path,
 )
 from manifest_builder.output import write_documents
+
+
+@dataclass
+class SimpleConfig:
+    """Configuration for a simple deployment built from bundled YAML templates."""
+
+    name: str
+    namespace: str
+    image: str
+    args: list[str] | None = None
+    iam_role: str | None = None
+    k8s_role: str | None = None
+    service_account_annotations: dict[str, str] | None = (
+        None  # extra annotations for the managed ServiceAccount
+    )
+    config: dict[str, Path] | None = None  # container path -> resolved local path
+    external_secrets: list[str] | None = (
+        None  # mount paths for external secrets (e.g., ["/email-password"])
+    )
+    custom_token_audiences: list[str] | None = None
+    variables: dict[str, TemplateValue] = field(default_factory=dict)
+    extra_resources: Path | None = (
+        None  # directory with additional YAML resources to include
+    )
+    replicas: int = DEFAULT_REPLICA_COUNT  # number of deployment replicas
+    arch: str | None = None  # node architecture (sets kubernetes.io/arch nodeSelector)
+    random_secrets: list[str] | None = (
+        None  # secret key names for a RandomSecret mounted at /random-secrets
+    )
+
+
+def validate_simple_config(config: SimpleConfig) -> None:
+    """Validate a simple app configuration."""
+    for container_path, local_path in (config.config or {}).items():
+        if not local_path.exists():
+            raise ValueError(
+                f"Config file not found for '{config.name}': {local_path} "
+                f"(mapped from {container_path})"
+            )
+
+    if config.extra_resources is not None:
+        if not config.extra_resources.exists():
+            raise ValueError(
+                f"Extra resources directory not found for '{config.name}': {config.extra_resources}"
+            )
+        if not config.extra_resources.is_dir():
+            raise ValueError(
+                f"Extra resources path is not a directory for '{config.name}': {config.extra_resources}"
+            )
+
 
 # Annotation the ServiceAccount template emits for 'iam-role' (EKS IRSA).
 IAM_ROLE_ANNOTATION = "eks.amazonaws.com/role-arn"

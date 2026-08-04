@@ -10,8 +10,12 @@ import pystache.context
 import pytest
 import yaml
 
-from manifest_builder.config import PublicRepoConfig, load_configs
-from manifest_builder.public_repo import PublicRepoConfigHandler, generate_public_repo
+from manifest_builder.blocks.public_repo import PublicRepoConfig
+from manifest_builder.config import load_configs
+from manifest_builder.blocks.public_repo import (
+    PublicRepoConfigHandler,
+    generate_public_repo,
+)
 
 ACCOUNT_ID = 436027055282
 

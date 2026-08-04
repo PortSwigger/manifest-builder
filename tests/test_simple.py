@@ -8,9 +8,9 @@ import pytest
 import yaml
 from pystache.context import KeyNotFoundError
 
-from manifest_builder.config import SimpleConfig
+from manifest_builder.blocks.simple import SimpleConfig
 from manifest_builder.generator import generate_manifests
-from manifest_builder.simple import SimpleConfigHandler, generate_simple
+from manifest_builder.blocks.simple import SimpleConfigHandler, generate_simple
 
 
 def _read_yaml(path: Path) -> dict:

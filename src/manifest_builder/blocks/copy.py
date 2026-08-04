@@ -3,6 +3,7 @@
 """Copy manifest generation from existing manifests."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,8 @@ import yaml
 from pystache.common import MissingTags
 
 from manifest_builder.config import (
-    CopyConfig,
+    TemplateValue,
     parse_variables,
-    validate_copy_config,
     validate_known_fields,
 )
 from manifest_builder.handlers import ConfigHandler, GenerationContext
@@ -25,6 +25,35 @@ from manifest_builder.k8s import (
     make_k8s_name,
 )
 from manifest_builder.output import write_documents
+
+
+@dataclass
+class CopyConfig:
+    """Configuration for an app that copies existing manifests verbatim."""
+
+    name: str
+    source: Path  # resolved directory containing manifests to copy
+    namespace: str | None = None
+    config: dict[str, Path] | None = None  # container path -> resolved local path
+    variables: dict[str, TemplateValue] = field(default_factory=dict)
+
+
+def validate_copy_config(config: CopyConfig) -> None:
+    """Validate a copy app configuration."""
+    if not config.source.exists():
+        raise ValueError(
+            f"source directory not found for '{config.name}': {config.source}"
+        )
+    if not config.source.is_dir():
+        raise ValueError(
+            f"source path is not a directory for '{config.name}': {config.source}"
+        )
+    for container_path, local_path in (config.config or {}).items():
+        if not local_path.exists():
+            raise ValueError(
+                f"Config file not found for '{config.name}': {local_path} "
+                f"(mapped from {container_path})"
+            )
 
 
 class CopyConfigHandler(ConfigHandler[CopyConfig]):
