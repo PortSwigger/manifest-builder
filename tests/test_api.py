@@ -336,6 +336,7 @@ def test_generate_accepts_config_and_output_paths(
         extra_variables=None,
         default_namespace=None,
         default_image=None,
+        target=None,
     )
     mock_resolve_configs.assert_called_once_with(["loaded"], None)
     mock_load_images.assert_called_once_with(config)
@@ -402,6 +403,7 @@ def test_generate_passes_vars_as_extra_variables(
         },
         default_namespace=None,
         default_image=None,
+        target=None,
     )
 
 
@@ -538,6 +540,7 @@ def test_generate_namespace_mode_writes_owner_file(
         extra_variables=None,
         default_namespace="team-a",
         default_image=None,
+        target=None,
     )
     mock_load_owned_namespaces.assert_has_calls([call(config), call(output)])
     mock_generate_manifests.assert_called_once_with(
@@ -594,6 +597,7 @@ def test_generate_namespace_mode_passes_image_default(
         extra_variables=None,
         default_namespace="team-a",
         default_image="registry.example.com/app:1.0",
+        target=None,
     )
 
 
@@ -958,3 +962,133 @@ def test_top_level_generate_passes_vars(mock_generate: mock.Mock) -> None:
         image=None,
         vars={"domain": "example.com"},
     )
+
+
+def test_generate_from_a_target(tmp_path: Path) -> None:
+    """A version = 2 config directory generates the selected target's sections."""
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    output.mkdir()
+
+    base = config / "base"
+    base.mkdir(parents=True)
+    (base / "config.toml").write_text(
+        """\
+[[copy]]
+name = "base-settings"
+namespace = "base"
+source = "manifests"
+"""
+    )
+    base_manifests = base / "manifests"
+    base_manifests.mkdir()
+    (base_manifests / "configmap.yaml").write_text(
+        """\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: base-settings
+data:
+  cluster: {{cluster_name}}
+"""
+    )
+
+    platform = config / "platform"
+    platform.mkdir()
+    (platform / "config.toml").write_text(
+        """\
+[[copy]]
+name = "platform-settings"
+namespace = "platform"
+source = "manifests"
+"""
+    )
+    platform_manifests = platform / "manifests"
+    platform_manifests.mkdir()
+    (platform_manifests / "configmap.yaml").write_text(
+        """\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+data:
+  domain: {{vanity_domain}}
+"""
+    )
+
+    (config / "config.toml").write_text(
+        """\
+version = 2
+
+[[target]]
+name = "platform-dev"
+sections = ["base", "platform"]
+[target.vars]
+cluster_name = "platform-dev"
+vanity_domain = "portswigger.com"
+
+[[target]]
+name = "platform-prod"
+sections = ["base"]
+[target.vars]
+cluster_name = "platform-prod"
+"""
+    )
+
+    result = api_generate(config, output, repo_root=tmp_path, target="platform-dev")
+
+    base_cm = output / "base" / "configmap-base-settings.yaml"
+    platform_cm = output / "platform" / "configmap-platform-settings.yaml"
+    assert base_cm in result.written_paths
+    assert platform_cm in result.written_paths
+    assert yaml.safe_load(base_cm.read_text())["data"]["cluster"] == "platform-dev"
+    assert (
+        yaml.safe_load(platform_cm.read_text())["data"]["domain"] == "portswigger.com"
+    )
+
+
+def test_generate_from_a_target_omitting_a_section(tmp_path: Path) -> None:
+    """A target generates only the sections it names."""
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    output.mkdir()
+
+    for section in ("base", "platform"):
+        section_dir = config / section
+        manifests = section_dir / "manifests"
+        manifests.mkdir(parents=True)
+        (section_dir / "config.toml").write_text(
+            f"""\
+[[copy]]
+name = "{section}-settings"
+namespace = "{section}"
+source = "manifests"
+"""
+        )
+        (manifests / "configmap.yaml").write_text(
+            f"""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {section}-settings
+data:
+  cluster: {{{{cluster_name}}}}
+"""
+        )
+
+    (config / "config.toml").write_text(
+        """\
+version = 2
+
+[[target]]
+name = "small"
+sections = ["base"]
+[target.vars]
+cluster_name = "small-cluster"
+"""
+    )
+
+    result = api_generate(config, output, repo_root=tmp_path, target="small")
+
+    assert output / "base" / "configmap-base-settings.yaml" in result.written_paths
+    assert not (output / "platform").exists()

@@ -2608,3 +2608,867 @@ def test_load_owned_namespaces_ignores_non_toml_files(tmp_path: Path) -> None:
     (owners_dir / "team-a.toml").write_text('owned = "team-a"\n')
 
     assert load_owned_namespaces(tmp_path / "conf") == {"team-a"}
+
+
+# ---------------------------------------------------------------------------
+# Targets and sections (version = 2)
+# ---------------------------------------------------------------------------
+
+
+def write_targets_config(conf: Path, content: str) -> Path:
+    """Write a version = 2 top-level config file."""
+    return write_toml(conf, "config.toml", content)
+
+
+def write_section(conf: Path, section: str, content: str) -> Path:
+    """Write one section directory with its config file."""
+    section_dir = conf / section
+    section_dir.mkdir(parents=True, exist_ok=True)
+    return write_toml(section_dir, "section.toml", content)
+
+
+def load_target_configs(conf: Path, target: str) -> Sequence[ConfigHandler]:
+    return load_configs(conf, config_handlers(), target=target)
+
+
+def dev_and_prod_config(conf: Path) -> None:
+    """A two-target, two-section config directory used by several tests."""
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "platform-dev"
+        sections = ["base", "platform"]
+        [target.vars]
+        cluster_name = "platform-dev"
+        vanity_domain = "portswigger.com"
+
+        [[target]]
+        name = "platform-prod"
+        sections = ["base", "platform"]
+        [target.vars]
+        cluster_name = "platform-prod"
+        vanity_domain = "portswigger.net"
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[helm]]
+        namespace = "argo"
+        chart = "./charts/argocd"
+        name = "argocd"
+        """,
+    )
+    write_section(
+        conf,
+        "platform",
+        """\
+        [[helm]]
+        namespace = "idcat"
+        chart = "./charts/idcat"
+        name = "idcat"
+        """,
+    )
+
+
+def test_targets_load_blocks_from_every_section(tmp_path: Path) -> None:
+    """A target's sections each contribute their config blocks."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    dev_and_prod_config(conf)
+
+    configs = all_configs(load_target_configs(conf, "platform-dev"))
+
+    assert sorted(config.name for config in configs) == ["argocd", "idcat"]
+
+
+def test_target_vars_reach_every_section(tmp_path: Path) -> None:
+    """The selected target's vars become the variables each section renders with."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    dev_and_prod_config(conf)
+
+    configs = all_configs(load_target_configs(conf, "platform-prod"))
+
+    assert configs
+    for config in configs:
+        assert isinstance(config, ChartConfig)
+        assert config.variables == {
+            "cluster_name": "platform-prod",
+            "vanity_domain": "portswigger.net",
+        }
+
+
+def test_selecting_a_target_ignores_the_other_targets_vars(tmp_path: Path) -> None:
+    """Only the selected target's vars are used."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    dev_and_prod_config(conf)
+
+    config = next(iter(all_configs(load_target_configs(conf, "platform-dev"))))
+
+    assert isinstance(config, ChartConfig)
+    assert config.variables["cluster_name"] == "platform-dev"
+
+
+def test_target_selects_only_its_own_sections(tmp_path: Path) -> None:
+    """A section no selected target names is not loaded."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "small"
+        sections = ["base"]
+
+        [[target]]
+        name = "large"
+        sections = ["base", "extras"]
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[helm]]
+        namespace = "argo"
+        chart = "./charts/argocd"
+        name = "argocd"
+        """,
+    )
+    write_section(
+        conf,
+        "extras",
+        """\
+        [[helm]]
+        namespace = "extra"
+        chart = "./charts/extra"
+        name = "extra"
+        """,
+    )
+
+    small = all_configs(load_target_configs(conf, "small"))
+    assert sorted(config.name for config in small) == ["argocd"]
+
+    large = all_configs(load_target_configs(conf, "large"))
+    assert sorted(config.name for config in large) == ["argocd", "extra"]
+
+
+def test_section_paths_resolve_inside_the_section_directory(tmp_path: Path) -> None:
+    """Paths a section's blocks reference resolve relative to that section."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["platform"]
+        """,
+    )
+    write_section(
+        conf,
+        "platform",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        values = ["myapp/values.yaml"]
+        """,
+    )
+
+    config = only_config(load_target_configs(conf, "dev"))
+
+    assert isinstance(config, ChartConfig)
+    assert config.values == [conf / "platform" / "myapp" / "values.yaml"]
+
+
+def test_two_sections_may_name_the_same_relative_path(tmp_path: Path) -> None:
+    """Sections are self-contained, so equal relative paths stay distinct."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base", "platform"]
+        """,
+    )
+    for section, name in (("base", "base-app"), ("platform", "platform-app")):
+        write_section(
+            conf,
+            section,
+            f"""\
+            [[helm]]
+            namespace = "default"
+            chart = "./charts/myapp"
+            name = "{name}"
+            values = ["values.yaml"]
+            """,
+        )
+
+    values: dict[str, list[Path]] = {}
+    for config in all_configs(load_target_configs(conf, "dev")):
+        assert isinstance(config, ChartConfig)
+        values[config.name] = config.values
+
+    assert values == {
+        "base-app": [conf / "base" / "values.yaml"],
+        "platform-app": [conf / "platform" / "values.yaml"],
+    }
+
+
+@pytest.mark.parametrize(
+    "file_name", ["section.toml", "config.toml", "manifest-builder.toml"]
+)
+def test_section_config_file_names(tmp_path: Path, file_name: str) -> None:
+    """A section holds what a top-level config file used to, under any of its names."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        """,
+    )
+    section_dir = conf / "base"
+    section_dir.mkdir()
+    write_toml(
+        section_dir,
+        file_name,
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    assert only_config(load_target_configs(conf, "dev")).name == "myapp"
+
+
+def test_section_toml_preferred_over_config_toml(tmp_path: Path) -> None:
+    """section.toml is the canonical name and wins when both are present."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        """,
+    )
+    section_dir = conf / "base"
+    section_dir.mkdir()
+    for file_name, name in (
+        ("section.toml", "from-section-toml"),
+        ("config.toml", "from-config-toml"),
+    ):
+        write_toml(
+            section_dir,
+            file_name,
+            f"""\
+            [[helm]]
+            namespace = "default"
+            chart = "./charts/myapp"
+            name = "{name}"
+            """,
+        )
+
+    assert only_config(load_target_configs(conf, "dev")).name == "from-section-toml"
+
+
+def test_target_without_vars_loads_with_no_variables(tmp_path: Path) -> None:
+    """A target need not declare vars."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    config = only_config(load_target_configs(conf, "dev"))
+    assert isinstance(config, ChartConfig)
+    assert config.variables == {}
+
+
+def test_sections_accepts_a_single_string(tmp_path: Path) -> None:
+    """A lone section may be given without a list."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = "base"
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    assert only_config(load_target_configs(conf, "dev")).name == "myapp"
+
+
+def test_section_variables_merge_with_target_vars(tmp_path: Path) -> None:
+    """A section may add variables of its own alongside the target's vars."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        [target.vars]
+        cluster_name = "platform-dev"
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [variables]
+        domain = "example.com"
+
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    config = only_config(load_target_configs(conf, "dev"))
+    assert isinstance(config, ChartConfig)
+    assert config.variables == {
+        "cluster_name": "platform-dev",
+        "domain": "example.com",
+    }
+
+
+def test_section_variable_conflicting_with_target_var_raises(tmp_path: Path) -> None:
+    """A variable defined by both a target and a section is a config error."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        [target.vars]
+        cluster_name = "platform-dev"
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [variables]
+        cluster_name = "something-else"
+
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    with pytest.raises(ValueError, match="'cluster_name' defined in both target 'dev'"):
+        load_target_configs(conf, "dev")
+
+
+def test_extra_variables_merge_with_target_vars(tmp_path: Path) -> None:
+    """--vars-from variables are merged on top of a target's vars."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        [target.vars]
+        cluster_name = "platform-dev"
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    configs = load_configs(
+        conf,
+        config_handlers(),
+        extra_variables={"build_id": 42},
+        target="dev",
+    )
+
+    config = only_config(configs)
+    assert isinstance(config, ChartConfig)
+    assert config.variables == {"cluster_name": "platform-dev", "build_id": 42}
+
+
+def test_extra_variable_conflicting_with_target_var_raises(tmp_path: Path) -> None:
+    """A --vars-from variable a target also defines is a config error."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        [target.vars]
+        cluster_name = "platform-dev"
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    with pytest.raises(ValueError, match="'cluster_name' defined in both"):
+        load_configs(
+            conf,
+            config_handlers(),
+            extra_variables={"cluster_name": "other"},
+            target="dev",
+        )
+
+
+def test_target_must_be_selected(tmp_path: Path) -> None:
+    """A targets-style config directory needs a target to be chosen."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    dev_and_prod_config(conf)
+
+    with pytest.raises(
+        ValueError,
+        match="declares targets, so one must be selected. "
+        "Available targets: 'platform-dev', 'platform-prod'",
+    ):
+        load_configs(conf, config_handlers())
+
+
+def test_unknown_target_lists_the_available_ones(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    dev_and_prod_config(conf)
+
+    with pytest.raises(
+        ValueError,
+        match="Unknown target 'staging'.*"
+        "Available targets: 'platform-dev', 'platform-prod'",
+    ):
+        load_target_configs(conf, "staging")
+
+
+def test_target_rejected_for_a_blocks_style_config(tmp_path: Path) -> None:
+    """The older layout has no targets to choose between."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot select target 'dev'.*declares config blocks directly",
+    ):
+        load_target_configs(conf, "dev")
+
+
+def test_version_one_declares_config_blocks_directly(tmp_path: Path) -> None:
+    """An explicit version = 1 keeps the blocks-in-config.toml layout."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "config.toml",
+        """\
+        version = 1
+
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    assert only_config(load_test_configs(conf)).name == "myapp"
+
+
+def test_unsupported_version_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(conf, "config.toml", "version = 3\n")
+
+    with pytest.raises(
+        ValueError, match="Unsupported config version 3.*expected 1 or 2"
+    ):
+        load_test_configs(conf)
+
+
+def test_non_integer_version_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(conf, "config.toml", 'version = "2"\n')
+
+    with pytest.raises(ValueError, match="Unsupported config version '2'"):
+        load_test_configs(conf)
+
+
+def test_targets_config_rejects_config_blocks(tmp_path: Path) -> None:
+    """Config blocks belong in a section, not the targets file."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Unknown top-level field: 'helm'.*config blocks belong in a "
+        "section directory",
+    ):
+        load_target_configs(conf, "dev")
+
+
+def test_targets_config_without_targets_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(conf, "version = 2\n")
+
+    with pytest.raises(ValueError, match=r"No \[\[target\]\] entries found"):
+        load_target_configs(conf, "dev")
+
+
+def test_missing_section_directory_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base", "absent"]
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[helm]]
+        namespace = "default"
+        chart = "./charts/myapp"
+        name = "myapp"
+        """,
+    )
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Section directory not found for target 'dev'",
+    ):
+        load_target_configs(conf, "dev")
+
+
+def test_section_without_a_config_file_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        """,
+    )
+    (conf / "base").mkdir()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Configuration file not found.*section.toml.*for section 'base'",
+    ):
+        load_target_configs(conf, "dev")
+
+
+def test_section_without_config_blocks_raises(tmp_path: Path) -> None:
+    """A section that declares no blocks is a mistake worth reporting."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        """,
+    )
+    write_section(conf, "base", '[variables]\ndomain = "example.com"\n')
+
+    with pytest.raises(ValueError, match=r"No .*\[\[helm\]\].* entries found"):
+        load_target_configs(conf, "dev")
+
+
+def test_duplicate_target_names_raise(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="Duplicate target 'dev'"):
+        load_target_configs(conf, "dev")
+
+
+def test_repeated_section_in_one_target_raises(tmp_path: Path) -> None:
+    """Loading a section twice would duplicate every block it declares."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base", "base"]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="lists section 'base' more than once"):
+        load_target_configs(conf, "dev")
+
+
+@pytest.mark.parametrize("section", ["../escape", "nested/section", ".hidden", ""])
+def test_invalid_section_name_raises(tmp_path: Path, section: str) -> None:
+    """A section must name a single directory inside the config directory."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        f"""\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["{section}"]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="Invalid section name"):
+        load_target_configs(conf, "dev")
+
+
+def test_target_without_sections_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        """,
+    )
+
+    with pytest.raises(ValueError, match="Target 'dev'.*must set 'sections'"):
+        load_target_configs(conf, "dev")
+
+
+def test_target_with_empty_sections_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = []
+        """,
+    )
+
+    with pytest.raises(ValueError, match="must list at least one section"):
+        load_target_configs(conf, "dev")
+
+
+def test_target_without_name_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        sections = ["base"]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="must set a non-empty 'name'"):
+        load_target_configs(conf, "dev")
+
+
+def test_target_unknown_field_raises(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        cluster = "oops"
+        """,
+    )
+
+    with pytest.raises(
+        ValueError, match=r"Unknown field in \[\[target\]\]: 'cluster' on line 6"
+    ):
+        load_target_configs(conf, "dev")
+
+
+def test_target_sections_must_be_strings(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = [1, 2]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="'sections' must be a string or list"):
+        load_target_configs(conf, "dev")
+
+
+def test_target_vars_must_be_scalars(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        [target.vars]
+        nested = [1, 2]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="must be a string, number, or boolean"):
+        load_target_configs(conf, "dev")
