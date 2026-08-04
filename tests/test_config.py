@@ -22,7 +22,6 @@ from manifest_builder.config import (
     load_images,
     load_owned_namespaces,
     resolve_configs,
-    validate_config,
 )
 from manifest_builder.copy import CopyConfigHandler
 from manifest_builder.generator import HelmConfigHandler
@@ -449,7 +448,7 @@ def test_variables_are_loaded_for_helm_configs(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# validate_config
+# config validation
 # ---------------------------------------------------------------------------
 
 
@@ -464,7 +463,7 @@ def test_validate_config_missing_values_file(tmp_path: Path) -> None:
         release=None,
     )
     with pytest.raises(ValueError, match="Values file not found"):
-        validate_config(config, tmp_path)
+        HelmConfigHandler().validate(config, tmp_path)
 
 
 def test_validate_config_existing_values_file(tmp_path: Path) -> None:
@@ -480,7 +479,7 @@ def test_validate_config_existing_values_file(tmp_path: Path) -> None:
         values=[values_file],
         release="myapp",
     )
-    validate_config(config, tmp_path)  # should not raise
+    HelmConfigHandler().validate(config, tmp_path)  # should not raise
 
 
 def test_validate_config_missing_local_chart(tmp_path: Path) -> None:
@@ -494,7 +493,7 @@ def test_validate_config_missing_local_chart(tmp_path: Path) -> None:
         release=None,
     )
     with pytest.raises(ValueError, match="Local chart path not found"):
-        validate_config(config, tmp_path)
+        HelmConfigHandler().validate(config, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1871,7 +1870,7 @@ def test_validate_config_missing_config_file(tmp_path: Path) -> None:
         config={"/config/app.toml": tmp_path / "nonexistent.toml"},
     )
     with pytest.raises(ValueError, match="Config file not found"):
-        validate_config(config, tmp_path)
+        WebsiteConfigHandler().validate(config, tmp_path)
 
 
 def test_load_website_config_with_extra_hostnames_string(tmp_path: Path) -> None:
@@ -2094,7 +2093,7 @@ def test_validate_config_chart_extra_resources_missing_directory(
         extra_resources=tmp_path / "nonexistent",
     )
     with pytest.raises(ValueError, match="Extra resources directory not found"):
-        validate_config(config, tmp_path)
+        HelmConfigHandler().validate(config, tmp_path)
 
 
 def test_validate_config_chart_config_missing_file(tmp_path: Path) -> None:
@@ -2110,7 +2109,7 @@ def test_validate_config_chart_config_missing_file(tmp_path: Path) -> None:
         config={"app.conf": tmp_path / "missing.conf"},
     )
     with pytest.raises(ValueError, match="Config file not found for chart"):
-        validate_config(config, tmp_path)
+        HelmConfigHandler().validate(config, tmp_path)
 
 
 def test_validate_config_chart_extra_resources_not_a_directory(tmp_path: Path) -> None:
@@ -2129,7 +2128,7 @@ def test_validate_config_chart_extra_resources_not_a_directory(tmp_path: Path) -
         extra_resources=not_a_dir,
     )
     with pytest.raises(ValueError, match="Extra resources path is not a directory"):
-        validate_config(config, tmp_path)
+        HelmConfigHandler().validate(config, tmp_path)
 
 
 def test_validate_config_simple_extra_resources_missing_directory(
@@ -2143,7 +2142,7 @@ def test_validate_config_simple_extra_resources_missing_directory(
         extra_resources=tmp_path / "nonexistent",
     )
     with pytest.raises(ValueError, match="Extra resources directory not found"):
-        validate_config(config, tmp_path)
+        SimpleConfigHandler().validate(config, tmp_path)
 
 
 def test_validate_config_simple_extra_resources_not_a_directory(tmp_path: Path) -> None:
@@ -2158,7 +2157,7 @@ def test_validate_config_simple_extra_resources_not_a_directory(tmp_path: Path) 
         extra_resources=not_a_dir,
     )
     with pytest.raises(ValueError, match="Extra resources path is not a directory"):
-        validate_config(config, tmp_path)
+        SimpleConfigHandler().validate(config, tmp_path)
 
 
 def test_load_chart_config_with_init(tmp_path: Path) -> None:
@@ -2203,7 +2202,7 @@ def test_validate_config_chart_init_missing_file(tmp_path: Path) -> None:
         init=tmp_path / "nonexistent.sh",
     )
     with pytest.raises(ValueError, match="init script not found"):
-        validate_config(config, tmp_path)
+        HelmConfigHandler().validate(config, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2421,7 +2420,7 @@ def test_validate_copy_config_missing_source_dir(tmp_path: Path) -> None:
         source=tmp_path / "nonexistent",
     )
     with pytest.raises(ValueError, match="source directory not found"):
-        validate_config(config, tmp_path)
+        CopyConfigHandler().validate(config, tmp_path)
 
 
 def test_validate_copy_config_source_not_a_directory(tmp_path: Path) -> None:
@@ -2434,7 +2433,7 @@ def test_validate_copy_config_source_not_a_directory(tmp_path: Path) -> None:
         source=not_a_dir,
     )
     with pytest.raises(ValueError, match="source path is not a directory"):
-        validate_config(config, tmp_path)
+        CopyConfigHandler().validate(config, tmp_path)
 
 
 def test_validate_copy_config_missing_config_file(tmp_path: Path) -> None:
@@ -2448,7 +2447,7 @@ def test_validate_copy_config_missing_config_file(tmp_path: Path) -> None:
         config={"/config/app.cfg": tmp_path / "nonexistent.cfg"},
     )
     with pytest.raises(ValueError, match="Config file not found"):
-        validate_config(config, tmp_path)
+        CopyConfigHandler().validate(config, tmp_path)
 
 
 # ---------------------------------------------------------------------------

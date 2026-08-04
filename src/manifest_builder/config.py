@@ -609,28 +609,3 @@ def validate_chart_config(config: ChartConfig, repo_root: Path) -> None:
 
     if config.init is not None and not config.init.exists():
         raise ValueError(f"init script not found for '{config.name}': {config.init}")
-
-
-def validate_config(config: ManifestConfig, repo_root: Path) -> None:
-    """
-    Validate an app configuration.
-
-    Kept as a compatibility helper for callers that already have a concrete
-    config object. The main generation path uses config handlers instead, which
-    is the only route that reaches a config type defined outside this module.
-    """
-    if isinstance(config, WebsiteConfig):
-        validate_website_config(config)
-    elif isinstance(config, SimpleConfig):
-        validate_simple_config(config)
-    elif isinstance(config, CopyConfig):
-        validate_copy_config(config)
-    elif isinstance(config, ChartConfig):
-        validate_chart_config(config, repo_root)
-    elif isinstance(config, PublicRepoConfig):
-        pass  # public-repo configs reference no local files
-    else:
-        raise TypeError(
-            f"validate_config() does not know how to validate "
-            f"{type(config).__name__}; use its config handler instead"
-        )
