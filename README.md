@@ -107,6 +107,12 @@ Which target to generate is selected with `--target`, and is required for a
 manifest-builder --config-dir conf --output-dir output --target platform-dev
 ```
 
+From Python it is the `target` argument of `generate`:
+
+```python
+generate(Path("conf"), Path("output"), target="platform-dev")
+```
+
 Notes:
 
 - A section's blocks are read from that section's own `section.toml`, so the

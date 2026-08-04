@@ -903,6 +903,7 @@ def test_top_level_generate_delegates_to_api(mock_generate: mock.Mock) -> None:
         namespace=None,
         image=None,
         vars=None,
+        target=None,
     )
 
 
@@ -932,6 +933,7 @@ def test_top_level_generate_passes_namespace_image(mock_generate: mock.Mock) -> 
         namespace="team-a",
         image="registry.example.com/app:1.0",
         vars=None,
+        target=None,
     )
 
 
@@ -961,6 +963,36 @@ def test_top_level_generate_passes_vars(mock_generate: mock.Mock) -> None:
         namespace=None,
         image=None,
         vars={"domain": "example.com"},
+        target=None,
+    )
+
+
+@mock.patch(
+    "manifest_builder.api.generate",
+    return_value=GenerationResult(written_paths={Path("/out/app.yaml")}),
+)
+def test_top_level_generate_passes_target(mock_generate: mock.Mock) -> None:
+    """The top-level convenience wrapper selects a target."""
+    result = generate(
+        Path("conf"),
+        Path("output"),
+        repo_root=Path("/repo"),
+        target="dev",
+    )
+
+    assert result.written_paths == {Path("/out/app.yaml")}
+    mock_generate.assert_called_once_with(
+        Path("conf"),
+        Path("output"),
+        Path("/repo"),
+        False,
+        False,
+        False,
+        vars_from=None,
+        namespace=None,
+        image=None,
+        vars=None,
+        target="dev",
     )
 
 
