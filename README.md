@@ -7,10 +7,8 @@ Generate materialized Kubernetes manifests from various types of configuration
 To install or upgrade to the latest version:
 
 ```bash
-uv pip install --upgrade --pre --extra-index-url https://packages.buildkite.com/nresare/python/pypi/simple manifest-builder
+uv pip install --upgrade manifest-builder
 ```
-
-This includes nightly builds of development versions (e.g., `0.2.1.dev6+...`).
 
 ## Development
 
