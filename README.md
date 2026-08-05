@@ -155,26 +155,36 @@ reference and the version. Dashes in image names are converted to underscores:
 
 ## Config block plugins
 
-The built-in config blocks (`[[helm]]`, `[[simple]]`, and `[[copy]]`)
-each live in one module under `manifest_builder/blocks/` and are discovered at
-startup. A configuration directory can add blocks of its own by dropping modules
-into a `plugins/` subdirectory:
+`[[copy]]` is the one config block shipped here, in a module under
+`manifest_builder/blocks/`, discovered at startup. Every other block belongs to
+the configuration directory that uses it, dropped into a `plugins/`
+subdirectory:
 
 ```
 conf/
 ├── config.toml
 └── plugins/
+    ├── helm.py                         # defines HelmBlock
+    ├── simple.py                       # defines SimpleBlock
     ├── public_repo.py                  # defines PublicRepoBlock
     ├── templates/
-    │   └── public_repo/                # namespaced per block
+    │   ├── simple/                     # namespaced per block
+    │   └── public_repo/
     │       └── repository.yaml
     └── tests/
         └── test_public_repo.py
 ```
 
+Blocks live with their configuration because that is where they change: a
+deployment's idea of what a `[[simple]]` app needs is the deployment's business,
+and two configuration directories are free to disagree. This package keeps the
+toolkit they are built from — chart pulling, `releases.yaml` parsing,
+Kubernetes naming, ConfigMap construction, YAML output routing — so a block
+stays small.
+
 Every module in `plugins/` is imported, and any concrete `ConfigBlock`
 subclass it defines is registered under the top-level TOML key its
-`top_level_config_name()` returns. A plugin block is used exactly like a
+`top_level_config_name()` returns. A plugin block is used exactly like the
 built-in one:
 
 ```toml

@@ -25,6 +25,90 @@ from manifest_builder.api import (
 from manifest_builder.git_utils import GitManifestChanges, get_git_manifest_changes
 from manifest_builder.result import KubernetesObjectRef
 
+#: A minimal block, written into a config directory's plugins/ subdirectory.
+#: Blocks other than copy belong to the configuration directory that uses them,
+#: so an end-to-end API test brings its own, and covers plugin discovery on the
+#: way through.
+DEMO_PLUGIN = """\
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from manifest_builder.blocks import ConfigBlock, GenerationContext
+from manifest_builder.output import write_documents
+
+
+@dataclass
+class DemoConfig:
+    name: str
+    namespace: str
+    image: str
+
+
+class DemoBlock(ConfigBlock[DemoConfig]):
+    def __init__(self, configs: Sequence[DemoConfig] | None = None) -> None:
+        self.configs = list(configs or [])
+
+    def top_level_config_name(self) -> str:
+        return "demo"
+
+    def load_config(
+        self,
+        data: object,
+        source_file: Path,
+        root_config: dict[str, Any],
+        default_namespace: str | None = None,
+        default_image: str | None = None,
+    ) -> None:
+        assert isinstance(data, list)
+        for item in data:
+            namespace = item.get("namespace", default_namespace)
+            self.configs.append(
+                DemoConfig(
+                    name=item.get("name") or namespace,
+                    namespace=namespace,
+                    image=item.get("image") or default_image,
+                )
+            )
+
+    def iter_configs(self) -> list[DemoConfig]:
+        return self.configs
+
+    def validate(self, config: DemoConfig, repo_root: Path) -> None:
+        pass
+
+    def generate(
+        self,
+        config: DemoConfig,
+        context: GenerationContext,
+    ) -> set[Path]:
+        documents = [
+            {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {"name": config.name, "namespace": config.namespace},
+                "spec": {"image": config.image},
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {"name": config.name, "namespace": config.namespace},
+                "spec": {},
+            },
+        ]
+        return write_documents(
+            documents, context.output_dir, config.namespace, app_name=config.name
+        )
+"""
+
+
+def write_demo_plugin(config_dir: Path) -> None:
+    """Give a config directory the demo block its config.toml declares."""
+    plugins = config_dir / "plugins"
+    plugins.mkdir(parents=True, exist_ok=True)
+    (plugins / "demo.py").write_text(DEMO_PLUGIN)
+
 
 def test_generate_is_available_from_top_level_package() -> None:
     """Call sites can import generate directly from manifest_builder."""
@@ -54,11 +138,12 @@ def test_generate_reports_changed_objects_and_adds_deploy_id(
     init_test_repo(output)
     (config / "config.toml").write_text(
         """\
-[[simple]]
+[[demo]]
 namespace = "idcat"
 image = "registry.example.com/idcat:1.0"
 """
     )
+    write_demo_plugin(config)
     config_commit = _commit_all(config).decode("ascii")
 
     stale = output / "idcat" / "configmap-old.yaml"
@@ -408,41 +493,6 @@ def test_generate_passes_vars_as_extra_variables(
     )
 
 
-def test_generate_renders_simple_extra_resources_with_vars(tmp_path: Path) -> None:
-    """Direct API variables render the same templates as --vars-from variables."""
-    config = tmp_path / "config"
-    output = tmp_path / "output"
-    extra = config / "extra"
-    extra.mkdir(parents=True)
-    output.mkdir()
-    (extra / "configmap.yaml").write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{k8s_name}}-settings
-data:
-  domain: {{domain}}
-"""
-    )
-    (config / "config.toml").write_text(
-        """\
-[[simple]]
-namespace = "idcat"
-image = "registry.example.com/idcat:1.0"
-extra-resources = "extra"
-"""
-    )
-
-    result = api_generate(
-        config, output, repo_root=tmp_path, vars={"domain": "example.com"}
-    )
-
-    configmap = output / "idcat" / "configmap-idcat-settings.yaml"
-    assert configmap in result.written_paths
-    assert yaml.safe_load(configmap.read_text())["data"]["domain"] == "example.com"
-
-
 def test_generate_renders_copy_manifests_with_vars(tmp_path: Path) -> None:
     """Copy manifests are rendered with the same variables as --vars-from."""
     config = tmp_path / "config"
@@ -662,11 +712,12 @@ def test_system_mode_reconciles_system_owner_roots_and_commit(
     config_repo.close()
     (config / "config.toml").write_text(
         """\
-[[simple]]
+[[demo]]
 namespace = "team-a"
 image = "registry.example.com/team-a:1.0"
 """
     )
+    write_demo_plugin(config)
     _commit_all(config)
 
     init_test_repo(output)
@@ -841,10 +892,11 @@ def test_namespace_mode_commit_does_not_stage_preexisting_cluster_deletion(
     config_repo.close()
     (config / "config.toml").write_text(
         """\
-[[simple]]
+[[demo]]
 image = "registry.example.com/team-a:1.0"
 """
     )
+    write_demo_plugin(config)
     _commit_all(config)
 
     init_test_repo(output)

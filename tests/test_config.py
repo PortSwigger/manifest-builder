@@ -9,11 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import ProbeBlock, ProbeConfig
 
 from manifest_builder.blocks import ConfigBlock
 from manifest_builder.blocks.copy import CopyBlock, CopyConfig
-from manifest_builder.blocks.helm import ChartConfig, HelmBlock
-from manifest_builder.blocks.simple import SimpleBlock, SimpleConfig
 from manifest_builder.config import (
     ManifestConfig,
     load_configs,
@@ -23,7 +22,6 @@ from manifest_builder.config import (
     resolve_configs,
 )
 from manifest_builder.discovery import discover_blocks
-from manifest_builder.helmfile import Helmfile, HelmfileRelease, HelmfileRepository
 
 
 def write_toml(directory: Path, name: str, content: str) -> Path:
@@ -46,8 +44,13 @@ def only_config(
 
 
 def config_blocks() -> list[ConfigBlock[Any]]:
-    """The built-in blocks, found the same way a real run finds them."""
-    return discover_blocks()
+    """The blocks a real run finds, plus the probe block.
+
+    Only ``copy`` ships with this package; the probe block stands in for the
+    ones a configuration directory brings, so loading behaviour that is not
+    specific to any block can still be exercised against two blocks.
+    """
+    return [*discover_blocks(), ProbeBlock()]
 
 
 def load_test_configs(
@@ -58,293 +61,13 @@ def load_test_configs(
 
 def manifest_configs(
     *,
-    helm: list[ChartConfig] | None = None,
-    simples: list[SimpleConfig] | None = None,
+    probes: list[ProbeConfig] | None = None,
     copies: list[CopyConfig] | None = None,
-) -> list[HelmBlock | SimpleBlock | CopyBlock]:
+) -> list[ConfigBlock[Any]]:
     return [
-        HelmBlock(helm),
-        SimpleBlock(simples),
         CopyBlock(copies),
+        ProbeBlock(probes),
     ]
-
-
-# ---------------------------------------------------------------------------
-# Values file path resolution
-# ---------------------------------------------------------------------------
-
-
-def test_values_resolved_relative_to_config_dir(tmp_path: Path) -> None:
-    """Values paths must be resolved relative to the TOML file's directory."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        values = ["myapp/values.yaml"]
-        """,
-    )
-
-    configs = load_test_configs(conf_dir)
-    assert len(all_configs(configs)) == 1
-    config = only_config(configs)
-    assert isinstance(config, ChartConfig)
-    assert config.values == [conf_dir / "myapp/values.yaml"]
-
-
-def test_values_resolved_relative_to_custom_config_dir(tmp_path: Path) -> None:
-    """Specifying a different -c directory changes where values are resolved."""
-    conf_a = tmp_path / "conf-a"
-    conf_a.mkdir()
-    conf_b = tmp_path / "conf-b"
-    conf_b.mkdir()
-
-    for conf_dir in (conf_a, conf_b):
-        write_toml(
-            conf_dir,
-            "config.toml",
-            """\
-            [[helm]]
-            namespace = "default"
-            chart = "./charts/myapp"
-            name = "myapp"
-            values = ["values.yaml"]
-            """,
-        )
-
-    configs_a = load_test_configs(conf_a)
-    configs_b = load_test_configs(conf_b)
-
-    config_a = only_config(configs_a)
-    config_b = only_config(configs_b)
-    assert isinstance(config_a, ChartConfig)
-    assert isinstance(config_b, ChartConfig)
-    assert config_a.values == [conf_a / "values.yaml"]
-    assert config_b.values == [conf_b / "values.yaml"]
-    assert config_a.values != config_b.values
-
-
-def test_values_single_string_treated_as_list(tmp_path: Path) -> None:
-    """A bare string for 'values' is treated as a single-element list."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        values = "myapp/values.yaml"
-        """,
-    )
-
-    configs = load_test_configs(conf_dir)
-    config = only_config(configs)
-    assert isinstance(config, ChartConfig)
-    assert config.values == [conf_dir / "myapp/values.yaml"]
-
-
-def test_values_empty_when_not_specified(tmp_path: Path) -> None:
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        """,
-    )
-
-    configs = load_test_configs(conf_dir)
-    config = only_config(configs)
-    assert isinstance(config, ChartConfig)
-    assert config.values == []
-
-
-def test_load_chart_config_with_name_override(tmp_path: Path) -> None:
-    """Helm configs can override the release name passed to Helm."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        release = "myapp"
-        name-override = "myapp-rendered"
-        """,
-    )
-
-    configs = load_test_configs(conf_dir)
-    config = only_config(configs)
-
-    assert isinstance(config, ChartConfig)
-    assert config.name == "myapp"
-    assert config.release == "myapp"
-    assert config.name_override == "myapp-rendered"
-
-
-def test_load_chart_config_with_config(tmp_path: Path) -> None:
-    """Helm config can specify ConfigMap keys with local file paths."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    config_file = conf_dir / "app.conf"
-    config_file.write_text("debug=true\n")
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        config = { "app.conf" = "app.conf" }
-        """,
-    )
-
-    configs = load_test_configs(conf_dir)
-    config = only_config(configs)
-
-    assert isinstance(config, ChartConfig)
-    assert config.config == {"app.conf": config_file}
-
-
-def test_load_chart_config_with_custom_token_audiences(tmp_path: Path) -> None:
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        custom-token-audiences = ["vault", "api"]
-        """,
-    )
-
-    config = only_config(load_test_configs(conf_dir))
-
-    assert isinstance(config, ChartConfig)
-    assert config.custom_token_audiences == ["vault", "api"]
-
-
-def test_load_chart_config_with_custom_token_audience(tmp_path: Path) -> None:
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        custom-token-audience = "vault"
-        """,
-    )
-
-    config = only_config(load_test_configs(conf_dir))
-
-    assert isinstance(config, ChartConfig)
-    assert config.custom_token_audiences == ["vault"]
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        (
-            "custom-token-audience",
-            '["vault"]',
-            "'custom-token-audience' must be a string",
-        ),
-        (
-            "custom-token-audiences",
-            '"vault"',
-            "'custom-token-audiences' must be a list of strings",
-        ),
-    ],
-)
-def test_load_chart_config_custom_token_audience_type_validation(
-    tmp_path: Path, field: str, value: str, message: str
-) -> None:
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        f"""\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        {field} = {value}
-        """,
-    )
-
-    with pytest.raises(ValueError, match=re.escape(message)):
-        load_test_configs(conf_dir)
-
-
-def test_load_chart_config_custom_token_audience_fields_are_mutually_exclusive(
-    tmp_path: Path,
-) -> None:
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        custom-token-audience = "vault"
-        custom-token-audiences = ["api"]
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="Cannot specify both 'custom-token-audience' and "
-        "'custom-token-audiences'",
-    ):
-        load_test_configs(conf_dir)
-
-
-def test_load_chart_config_unknown_field_raises(tmp_path: Path) -> None:
-    """Unknown Helm fields should fail before generation."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        value = ["values.yaml"]
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"Unknown field in \[\[helm\]\]: 'value' on line 5",
-    ):
-        load_test_configs(conf_dir)
 
 
 def test_load_config_unknown_field_reports_correct_table_occurrence(
@@ -357,14 +80,14 @@ def test_load_config_unknown_field_reports_correct_table_occurrence(
         conf_dir,
         "config.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
 
-        [[helm]]
+        [[copy]]
         namespace = "staging"
-        chart = "./charts/other"
+        source = "other"
         name = "other"
         value = ["values.yaml"]
         """,
@@ -372,7 +95,7 @@ def test_load_config_unknown_field_reports_correct_table_occurrence(
 
     with pytest.raises(
         ValueError,
-        match=r"Unknown field in \[\[helm\]\]: 'value' on line 10",
+        match=r"Unknown field in \[\[copy\]\]: 'value' on line 10",
     ):
         load_test_configs(conf_dir)
 
@@ -388,9 +111,9 @@ def test_extra_variables_are_merged_into_helm_configs(tmp_path: Path) -> None:
         [variables]
         domain = "example.com"
 
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -401,7 +124,7 @@ def test_extra_variables_are_merged_into_helm_configs(tmp_path: Path) -> None:
         extra_variables={"cluster_name": "prod", "replica_count": 3},
     )
     config = only_config(configs)
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.variables == {
         "domain": "example.com",
         "cluster_name": "prod",
@@ -417,9 +140,9 @@ def test_extra_variables_without_config_variables(tmp_path: Path) -> None:
         conf_dir,
         "config.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -430,7 +153,7 @@ def test_extra_variables_without_config_variables(tmp_path: Path) -> None:
         extra_variables={"cluster_name": "prod"},
     )
     config = only_config(configs)
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.variables == {"cluster_name": "prod"}
 
 
@@ -445,9 +168,9 @@ def test_extra_variables_conflict_raises(tmp_path: Path) -> None:
         [variables]
         domain = "example.com"
 
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -499,89 +222,6 @@ def test_load_extra_variables_rejects_nested_table(tmp_path: Path) -> None:
         load_extra_variables(vars_file)
 
 
-def test_variables_are_loaded_for_helm_configs(tmp_path: Path) -> None:
-    """Top-level variables should be attached to helm configs from the same TOML file."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-        [variables]
-        domain = "example.com"
-        replica_count = 3
-        use_tls = true
-
-        [[helm]]
-        namespace = "default"
-        chart = "./charts/myapp"
-        name = "myapp"
-        values = ["values.yaml"]
-        """,
-    )
-
-    configs = load_test_configs(conf_dir)
-    assert len(all_configs(configs)) == 1
-    config = only_config(configs)
-    assert isinstance(config, ChartConfig)
-    assert config.variables == {
-        "domain": "example.com",
-        "replica_count": 3,
-        "use_tls": True,
-    }
-
-
-# ---------------------------------------------------------------------------
-# config validation
-# ---------------------------------------------------------------------------
-
-
-def test_validate_config_missing_values_file(tmp_path: Path) -> None:
-    config = ChartConfig(
-        name="myapp",
-        namespace="default",
-        chart="./charts/myapp",
-        repo=None,
-        version=None,
-        values=[tmp_path / "nonexistent.yaml"],
-        release=None,
-    )
-    with pytest.raises(ValueError, match="Values file not found"):
-        HelmBlock().validate(config, tmp_path)
-
-
-def test_validate_config_existing_values_file(tmp_path: Path) -> None:
-    values_file = tmp_path / "values.yaml"
-    values_file.write_text("key: value\n")
-
-    config = ChartConfig(
-        name="myapp",
-        namespace="default",
-        chart=None,
-        repo=None,
-        version=None,
-        values=[values_file],
-        release="myapp",
-    )
-    HelmBlock().validate(config, tmp_path)  # should not raise
-
-
-def test_validate_config_missing_local_chart(tmp_path: Path) -> None:
-    config = ChartConfig(
-        name="myapp",
-        namespace="default",
-        chart="./charts/myapp",
-        repo=None,
-        version=None,
-        values=[],
-        release=None,
-    )
-    with pytest.raises(ValueError, match="Local chart path not found"):
-        HelmBlock().validate(config, tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# load_configs
 # ---------------------------------------------------------------------------
 
 
@@ -630,16 +270,16 @@ def test_load_configs_accepts_manifest_builder_toml(tmp_path: Path) -> None:
         conf,
         "manifest-builder.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
 
     config = only_config(load_test_configs(conf))
 
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.name == "myapp"
 
 
@@ -651,9 +291,9 @@ def test_load_configs_prefers_config_toml(tmp_path: Path) -> None:
         conf,
         "config.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "from-config-toml"
         """,
     )
@@ -661,16 +301,16 @@ def test_load_configs_prefers_config_toml(tmp_path: Path) -> None:
         conf,
         "manifest-builder.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "from-manifest-builder-toml"
         """,
     )
 
     config = only_config(load_test_configs(conf))
 
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.name == "from-config-toml"
 
 
@@ -700,15 +340,14 @@ def test_load_configs_no_registered_block_tables(tmp_path: Path) -> None:
         conf,
         "config.toml",
         """\
-        [[helm]]
+        [[probe]]
         namespace = "default"
-        chart = "./charts/myapp"
         name = "myapp"
         """,
     )
     with pytest.raises(
         ValueError,
-        match="Unknown top-level field: 'helm' on line 1",
+        match="Unknown top-level field: 'probe' on line 1",
     ):
         load_configs(conf, [CopyBlock()])
 
@@ -721,658 +360,14 @@ def test_load_configs_without_blocks_raises(tmp_path: Path) -> None:
         conf,
         "config.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
     with pytest.raises(ValueError, match="No config blocks registered"):
         load_configs(conf, [])
-
-
-def test_load_simple_config(tmp_path: Path) -> None:
-    """Simple config can omit name and use namespace as the generated name."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    (conf / "idcat").mkdir()
-    (conf / "idcat" / "myconfig.toml").write_text("[idcat]\nenabled = true\n")
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-
-        [[simple.config]]
-        "/config/myconfig.toml" = "idcat/myconfig.toml"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.name == "idcat"
-    assert config.namespace == "idcat"
-    assert config.image == "example.com/idcat:1.0"
-    assert config.config == {"/config/myconfig.toml": conf / "idcat" / "myconfig.toml"}
-
-
-def test_load_simple_config_uses_default_namespace(tmp_path: Path) -> None:
-    """Simple config can get its namespace from namespace-owner mode."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        image = "example.com/idcat:1.0"
-        """,
-    )
-
-    configs = load_configs(conf, config_blocks(), default_namespace="idcat")
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.name == "idcat"
-    assert config.namespace == "idcat"
-
-
-def test_load_simple_config_uses_default_image(tmp_path: Path) -> None:
-    """Simple config can get its image from namespace-mode API input."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        """,
-    )
-
-    configs = load_configs(
-        conf,
-        config_blocks(),
-        default_namespace="idcat",
-        default_image="example.com/idcat:1.0",
-    )
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.namespace == "idcat"
-    assert config.image == "example.com/idcat:1.0"
-
-
-def test_load_simple_config_rejects_image_with_default_image(tmp_path: Path) -> None:
-    """Config image and API image override are mutually exclusive."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        image = "example.com/idcat:1.0"
-        """,
-    )
-
-    with pytest.raises(ValueError, match="Cannot specify 'image'.*generate"):
-        load_configs(
-            conf,
-            config_blocks(),
-            default_namespace="idcat",
-            default_image="example.com/override:1.0",
-        )
-
-
-def test_load_simple_config_with_extra_resources(tmp_path: Path) -> None:
-    """Simple config can specify a directory with extra YAML resources."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    resources_dir = conf / "resources"
-    resources_dir.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        extra-resources = "resources"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.extra_resources == resources_dir
-
-
-def test_load_simple_config_with_iam_role_and_variables(tmp_path: Path) -> None:
-    """Simple iam-role is parsed with the variables used during rendering."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [variables]
-        account_id = "123456789012"
-        cluster_name = "berries"
-
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        iam-role = "arn:aws:iam::{{account_id}}:role/{{cluster_name}}-idcat"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.iam_role == "arn:aws:iam::{{account_id}}:role/{{cluster_name}}-idcat"
-    assert config.variables == {
-        "account_id": "123456789012",
-        "cluster_name": "berries",
-    }
-
-
-def test_load_simple_config_with_k8s_role(tmp_path: Path) -> None:
-    """Simple config can specify a Kubernetes Role to bind to its ServiceAccount."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        k8s-role = "idcat-reader"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.k8s_role == "idcat-reader"
-
-
-def test_load_simple_config_with_service_account_annotations(tmp_path: Path) -> None:
-    """Simple config can specify a table of ServiceAccount annotations."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-
-        [simple.service-account-annotations]
-        "example.com/owner" = "platform"
-        "example.com/team" = "berries"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.service_account_annotations == {
-        "example.com/owner": "platform",
-        "example.com/team": "berries",
-    }
-
-
-def test_load_simple_config_service_account_annotations_must_be_strings(
-    tmp_path: Path,
-) -> None:
-    """Non-string annotation values are rejected."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-
-        [simple.service-account-annotations]
-        "example.com/replicas" = 3
-        """,
-    )
-
-    with pytest.raises(
-        ValueError, match=r"'service-account-annotations' must be a table"
-    ):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_rejects_role_arn_annotation_with_iam_role(
-    tmp_path: Path,
-) -> None:
-    """Setting the role-arn annotation and iam-role together fails clearly."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        iam-role = "arn:aws:iam::123456789012:role/berries-idcat"
-
-        [simple.service-account-annotations]
-        "eks.amazonaws.com/role-arn" = "arn:aws:iam::123456789012:role/other"
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"cannot set 'eks\.amazonaws\.com/role-arn' when 'iam-role'",
-    ):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_with_arch(tmp_path: Path) -> None:
-    """Simple config can declare a node architecture for the Pod nodeSelector."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        arch = "arm64"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.arch == "arm64"
-
-
-def test_load_simple_config_with_args(tmp_path: Path) -> None:
-    """Simple config accepts an ordered list of container arguments."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        args = ["serve", "--port=8080"]
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.args == ["serve", "--port=8080"]
-
-
-def test_load_simple_config_args_must_be_list_of_strings(tmp_path: Path) -> None:
-    """Simple args reject scalar values instead of changing their meaning."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        args = "serve"
-        """,
-    )
-
-    with pytest.raises(ValueError, match="'args' must be a list of strings"):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_with_custom_token_audiences(tmp_path: Path) -> None:
-    """Simple config can specify custom audiences for projected tokens."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        custom-token-audiences = ["vault", "api"]
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.custom_token_audiences == ["vault", "api"]
-
-
-def test_load_simple_config_custom_token_audiences_must_be_list(
-    tmp_path: Path,
-) -> None:
-    """Simple custom token audiences must be configured as a string list."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        custom-token-audiences = "vault"
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="'custom-token-audiences' must be a list of strings",
-    ):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_arch_must_be_string(tmp_path: Path) -> None:
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        arch = 64
-        """,
-    )
-
-    with pytest.raises(ValueError, match="'arch' must be a string"):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_with_external_secrets(tmp_path: Path) -> None:
-    """An external-secrets list is preserved in order."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        external-secrets = ["/email-password", "/db/credentials"]
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.external_secrets == ["/email-password", "/db/credentials"]
-
-
-def test_load_simple_config_with_external_secrets_string(tmp_path: Path) -> None:
-    """A single external secret is normalized into a one-element list."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        external-secrets = "/api-key"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.external_secrets == ["/api-key"]
-
-
-def test_load_simple_config_with_external_secret(tmp_path: Path) -> None:
-    """A singular external-secret is normalized to a one-element list."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        external-secret = "/api-key"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.external_secrets == ["/api-key"]
-
-
-def test_load_simple_config_rejects_both_external_secret_forms(
-    tmp_path: Path,
-) -> None:
-    """The singular and plural external secret fields are mutually exclusive."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        external-secret = "/api-key"
-        external-secrets = ["/email-password"]
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="Cannot specify both 'external-secret' and 'external-secrets'",
-    ):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_external_secret_must_be_string(tmp_path: Path) -> None:
-    """The singular external-secret field only accepts a string."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        external-secret = ["/api-key"]
-        """,
-    )
-
-    with pytest.raises(ValueError, match="'external-secret' must be a string"):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_external_secrets_must_be_strings(tmp_path: Path) -> None:
-    """external-secrets must be a string or list of strings."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        external-secrets = [1]
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="'external-secrets' must be a string or list of strings",
-    ):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_with_random_secret(tmp_path: Path) -> None:
-    """A single random-secret is normalized into a one-element list."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        random-secret = "SESSION_KEY"
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.random_secrets == ["SESSION_KEY"]
-
-
-def test_load_simple_config_with_random_secrets_list(tmp_path: Path) -> None:
-    """A random-secrets list is preserved in order."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        random-secrets = ["API_KEY", "SIGNING_KEY"]
-        """,
-    )
-
-    configs = load_test_configs(conf)
-    config = only_config(configs)
-    assert isinstance(config, SimpleConfig)
-    assert config.random_secrets == ["API_KEY", "SIGNING_KEY"]
-
-
-def test_load_simple_config_rejects_both_random_secret_forms(tmp_path: Path) -> None:
-    """Specifying both random-secret and random-secrets is an error."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        random-secret = "SESSION_KEY"
-        random-secrets = ["API_KEY"]
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="Cannot specify both 'random-secret' and 'random-secrets'",
-    ):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_random_secrets_must_be_list_of_strings(
-    tmp_path: Path,
-) -> None:
-    """random-secrets must be a list of strings."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        random-secrets = "API_KEY"
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="'random-secrets' must be a list of strings",
-    ):
-        load_test_configs(conf)
-
-
-def test_load_simple_config_unknown_field_raises(tmp_path: Path) -> None:
-    """Unknown simple fields should fail before generation."""
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[simple]]
-        namespace = "idcat"
-        image = "example.com/idcat:1.0"
-        iam_role = "typo"
-        """,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"Unknown field in \[\[simple\]\]: 'iam_role' on line 4",
-    ):
-        load_test_configs(conf)
-
-
-def test_load_configs_both_release_and_chart_raises(tmp_path: Path) -> None:
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        name = "myapp"
-        chart = "./charts/myapp"
-        release = "myapp"
-        """,
-    )
-    with pytest.raises(ValueError, match="Cannot specify both"):
-        load_test_configs(conf)
-
-
-def test_load_configs_neither_release_nor_chart_raises(tmp_path: Path) -> None:
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    write_toml(
-        conf,
-        "config.toml",
-        """\
-        [[helm]]
-        namespace = "default"
-        name = "myapp"
-        """,
-    )
-    with pytest.raises(ValueError, match="Must specify either"):
-        load_test_configs(conf)
 
 
 def test_load_configs_uses_only_config_toml(tmp_path: Path) -> None:
@@ -1383,9 +378,9 @@ def test_load_configs_uses_only_config_toml(tmp_path: Path) -> None:
         conf,
         "config.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "ns-a"
-        chart = "./charts/a"
+        source = "a"
         name = "app-a"
         """,
     )
@@ -1393,9 +388,9 @@ def test_load_configs_uses_only_config_toml(tmp_path: Path) -> None:
         conf,
         "other.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "ns-b"
-        chart = "./charts/b"
+        source = "b"
         name = "app-b"
         """,
     )
@@ -1405,312 +400,81 @@ def test_load_configs_uses_only_config_toml(tmp_path: Path) -> None:
     assert names == {"app-a"}
 
 
-def test_load_configs_mixed_helms_and_simples(tmp_path: Path) -> None:
+def test_load_configs_mixed_blocks(tmp_path: Path) -> None:
+    """One config file may declare tables owned by different blocks."""
     conf = tmp_path / "conf"
     conf.mkdir()
     write_toml(
         conf,
         "config.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
-        name = "my-helm-app"
+        source = "myapp"
+        name = "my-copy-app"
 
-        [[simple]]
-        name = "my-simple-app"
+        [[probe]]
+        name = "my-probe-app"
         namespace = "apps"
         image = "example.com/my-app:1.0"
         """,
     )
 
     configs = load_test_configs(conf)
-    assert len(all_configs(configs)) == 2
     parsed = all_configs(configs)
-    assert sum(isinstance(config, ChartConfig) for config in parsed) == 1
-    assert sum(isinstance(config, SimpleConfig) for config in parsed) == 1
+    assert len(parsed) == 2
+    assert sum(isinstance(config, CopyConfig) for config in parsed) == 1
+    assert sum(isinstance(config, ProbeConfig) for config in parsed) == 1
 
 
 # ---------------------------------------------------------------------------
-# resolve_configs
+# What loading hands to a block
 # ---------------------------------------------------------------------------
 
 
-def _make_helmfile() -> Helmfile:
-    return Helmfile(
-        repositories=[
-            HelmfileRepository(name="myrepo", url="https://charts.example.com")
-        ],
-        releases=[
-            HelmfileRelease(
-                name="myapp",
-                chart="myrepo/myapp",
-                version="1.2.3",
-                namespace="default",
-            )
-        ],
-    )
+def test_load_configs_passes_the_default_namespace_to_blocks(tmp_path: Path) -> None:
+    """Namespace-owner mode lets an entry omit its namespace."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(conf, "config.toml", '[[probe]]\nname = "myapp"\n')
+    probe = ProbeBlock()
+
+    load_configs(conf, [probe], default_namespace="idcat")
+
+    (call,) = probe.load_calls
+    assert call["default_namespace"] == "idcat"
+    assert only_config([probe]).namespace == "idcat"
 
 
-def test_resolve_configs_fills_in_chart_and_repo(tmp_path: Path) -> None:
-    config = ChartConfig(
-        name="myapp",
-        namespace="default",
-        chart=None,
-        repo=None,
-        version=None,
-        values=[],
-        release="myapp",
-        name_override="myapp-rendered",
-        custom_token_audiences=["vault"],
-    )
-    resolved = resolve_configs(manifest_configs(helm=[config]), _make_helmfile())
-    assert len(all_configs(resolved)) == 1
-    resolved_config = only_config(resolved)
-    assert isinstance(resolved_config, ChartConfig)
-    assert resolved_config.chart == "myapp"
-    assert resolved_config.repo == "https://charts.example.com"
-    assert resolved_config.version == "1.2.3"
-    assert resolved_config.name_override == "myapp-rendered"
-    assert resolved_config.custom_token_audiences == ["vault"]
+def test_load_configs_passes_the_default_image_to_blocks(tmp_path: Path) -> None:
+    """An image override reaches the blocks that support one."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(conf, "config.toml", '[[probe]]\nname = "myapp"\n')
+    probe = ProbeBlock()
+
+    load_configs(conf, [probe], default_image="example.com/myapp:1.0")
+
+    (call,) = probe.load_calls
+    assert call["default_image"] == "example.com/myapp:1.0"
+    config = only_config([probe])
+    assert isinstance(config, ProbeConfig)
+    assert config.image == "example.com/myapp:1.0"
 
 
-def test_resolve_configs_no_helmfile_raises_when_release_present(
-    tmp_path: Path,
-) -> None:
-    config = ChartConfig(
-        name="myapp",
-        namespace="default",
-        chart=None,
-        repo=None,
-        version=None,
-        values=[],
-        release="myapp",
-    )
-    with pytest.raises(ValueError, match="no releases.yaml was found"):
-        resolve_configs(manifest_configs(helm=[config]), None)
+def test_resolve_configs_offers_the_helmfile_to_every_block() -> None:
+    """Every block gets a chance to resolve references once loading is done."""
+    blocks = [CopyBlock(), ProbeBlock()]
 
+    resolved = resolve_configs(blocks, None)
 
-def test_resolve_configs_unknown_release_raises() -> None:
-    config = ChartConfig(
-        name="unknown",
-        namespace="default",
-        chart=None,
-        repo=None,
-        version=None,
-        values=[],
-        release="unknown",
-    )
-    with pytest.raises(ValueError, match="not found in releases.yaml"):
-        resolve_configs(manifest_configs(helm=[config]), _make_helmfile())
-
-
-def test_resolve_configs_oci_repository() -> None:
-    """OCI repositories should be resolved to a full OCI URL chart and no repo."""
-    helmfile = Helmfile(
-        repositories=[
-            HelmfileRepository(
-                name="envoyproxy",
-                url="docker.io/envoyproxy",
-                oci=True,
-            )
-        ],
-        releases=[
-            HelmfileRelease(
-                name="envoy-gateway",
-                chart="envoyproxy/gateway-helm",
-                version="v1.7.0",
-                namespace="default",
-            )
-        ],
-    )
-    config = ChartConfig(
-        name="envoy-gateway",
-        namespace="default",
-        chart=None,
-        repo=None,
-        version=None,
-        values=[],
-        release="envoy-gateway",
-    )
-    resolved = resolve_configs(manifest_configs(helm=[config]), helmfile)
-    assert len(all_configs(resolved)) == 1
-    resolved_config = only_config(resolved)
-    assert isinstance(resolved_config, ChartConfig)
-    assert resolved_config.chart == "oci://docker.io/envoyproxy/gateway-helm"
-    assert resolved_config.repo is None
-    assert resolved_config.version == "v1.7.0"
-
-
-def test_resolve_configs_passthrough_for_direct_chart() -> None:
-    config = ChartConfig(
-        name="myapp",
-        namespace="default",
-        chart="./charts/myapp",
-        repo=None,
-        version=None,
-        values=[],
-        release=None,
-        extra_resources=None,
-    )
-    resolved = resolve_configs(manifest_configs(helm=[config]), None)
-    assert all_configs(resolved) == (config,)
-
-
-def test_load_chart_config_with_extra_resources(tmp_path: Path) -> None:
-    """Chart config can specify a directory with extra YAML resources."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    resources_dir = conf_dir / "resources"
-    resources_dir.mkdir()
-
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-[[helm]]
-name = "my-chart"
-namespace = "default"
-chart = "./charts/myapp"
-extra-resources = "resources"
-""",
-    )
-
-    configs = load_test_configs(conf_dir)
-    config = only_config(configs)
-    assert isinstance(config, ChartConfig)
-    assert config.extra_resources == resources_dir
-
-
-def test_validate_config_chart_extra_resources_missing_directory(
-    tmp_path: Path,
-) -> None:
-    """Validation should fail if extra_resources directory doesn't exist."""
-    config = ChartConfig(
-        name="my-chart",
-        namespace="default",
-        chart="./charts/myapp",
-        repo=None,
-        version=None,
-        values=[],
-        release=None,
-        extra_resources=tmp_path / "nonexistent",
-    )
-    with pytest.raises(ValueError, match="Extra resources directory not found"):
-        HelmBlock().validate(config, tmp_path)
-
-
-def test_validate_config_chart_config_missing_file(tmp_path: Path) -> None:
-    """Validation should fail if a Helm config file doesn't exist."""
-    config = ChartConfig(
-        name="my-chart",
-        namespace="default",
-        chart="./charts/myapp",
-        repo=None,
-        version=None,
-        values=[],
-        release=None,
-        config={"app.conf": tmp_path / "missing.conf"},
-    )
-    with pytest.raises(ValueError, match="Config file not found for chart"):
-        HelmBlock().validate(config, tmp_path)
-
-
-def test_validate_config_chart_extra_resources_not_a_directory(tmp_path: Path) -> None:
-    """Validation should fail if extra_resources path is not a directory."""
-    not_a_dir = tmp_path / "file.txt"
-    not_a_dir.write_text("content")
-
-    config = ChartConfig(
-        name="my-chart",
-        namespace="default",
-        chart="./charts/myapp",
-        repo=None,
-        version=None,
-        values=[],
-        release=None,
-        extra_resources=not_a_dir,
-    )
-    with pytest.raises(ValueError, match="Extra resources path is not a directory"):
-        HelmBlock().validate(config, tmp_path)
-
-
-def test_validate_config_simple_extra_resources_missing_directory(
-    tmp_path: Path,
-) -> None:
-    """Validation should fail if simple extra_resources directory doesn't exist."""
-    config = SimpleConfig(
-        name="idcat",
-        namespace="idcat",
-        image="example.com/idcat:1.0",
-        extra_resources=tmp_path / "nonexistent",
-    )
-    with pytest.raises(ValueError, match="Extra resources directory not found"):
-        SimpleBlock().validate(config, tmp_path)
-
-
-def test_validate_config_simple_extra_resources_not_a_directory(tmp_path: Path) -> None:
-    """Validation should fail if simple extra_resources path is not a directory."""
-    not_a_dir = tmp_path / "file.txt"
-    not_a_dir.write_text("content")
-
-    config = SimpleConfig(
-        name="idcat",
-        namespace="idcat",
-        image="example.com/idcat:1.0",
-        extra_resources=not_a_dir,
-    )
-    with pytest.raises(ValueError, match="Extra resources path is not a directory"):
-        SimpleBlock().validate(config, tmp_path)
-
-
-def test_load_chart_config_with_init(tmp_path: Path) -> None:
-    """Chart config can specify an init script to inject as initContainer."""
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    script_file = conf_dir / "setup.sh"
-    script_file.write_text("#!/bin/sh\necho 'initializing'")
-
-    write_toml(
-        conf_dir,
-        "config.toml",
-        """\
-[[helm]]
-name = "my-chart"
-namespace = "default"
-chart = "./charts/myapp"
-init = "setup.sh"
-""",
-    )
-
-    configs = load_test_configs(conf_dir)
-    config = only_config(configs)
-    assert isinstance(config, ChartConfig)
-    assert config.init == script_file
-
-
-def test_validate_config_chart_init_missing_file(tmp_path: Path) -> None:
-    """Validation should fail if init script file doesn't exist."""
-    # Create the chart directory so that check passes
-    chart_dir = tmp_path / "charts" / "myapp"
-    chart_dir.mkdir(parents=True)
-
-    config = ChartConfig(
-        name="my-chart",
-        namespace="default",
-        chart="./charts/myapp",
-        repo=None,
-        version=None,
-        values=[],
-        release=None,
-        init=tmp_path / "nonexistent.sh",
-    )
-    with pytest.raises(ValueError, match="init script not found"):
-        HelmBlock().validate(config, tmp_path)
+    assert resolved is blocks
+    assert blocks[1].resolved_with == [None]
 
 
 # ---------------------------------------------------------------------------
-# Copy config item parsing
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -1955,8 +719,6 @@ def test_validate_copy_config_missing_config_file(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Image loading
-# ---------------------------------------------------------------------------
 
 
 def test_load_images_returns_image_dict(tmp_path: Path) -> None:
@@ -2051,8 +813,6 @@ def test_load_images_raises_on_invalid_entry(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# load_owned_namespaces
-# ---------------------------------------------------------------------------
 
 
 def test_load_owned_namespaces_returns_empty_when_dir_missing(tmp_path: Path) -> None:
@@ -2129,8 +889,6 @@ def test_load_owned_namespaces_ignores_non_toml_files(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Targets and sections (version = 2)
-# ---------------------------------------------------------------------------
 
 
 def write_targets_config(conf: Path, content: str) -> Path:
@@ -2175,9 +933,9 @@ def dev_and_prod_config(conf: Path) -> None:
         conf,
         "base",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "argo"
-        chart = "./charts/argocd"
+        source = "argocd"
         name = "argocd"
         """,
     )
@@ -2185,9 +943,9 @@ def dev_and_prod_config(conf: Path) -> None:
         conf,
         "platform",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "idcat"
-        chart = "./charts/idcat"
+        source = "idcat"
         name = "idcat"
         """,
     )
@@ -2214,7 +972,7 @@ def test_target_vars_reach_every_section(tmp_path: Path) -> None:
 
     assert configs
     for config in configs:
-        assert isinstance(config, ChartConfig)
+        assert isinstance(config, CopyConfig)
         assert config.variables == {
             "cluster_name": "platform-prod",
             "vanity_domain": "portswigger.net",
@@ -2229,7 +987,7 @@ def test_selecting_a_target_ignores_the_other_targets_vars(tmp_path: Path) -> No
 
     config = next(iter(all_configs(load_target_configs(conf, "platform-dev"))))
 
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.variables["cluster_name"] == "platform-dev"
 
 
@@ -2255,9 +1013,9 @@ def test_target_selects_only_its_own_sections(tmp_path: Path) -> None:
         conf,
         "base",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "argo"
-        chart = "./charts/argocd"
+        source = "argocd"
         name = "argocd"
         """,
     )
@@ -2265,9 +1023,9 @@ def test_target_selects_only_its_own_sections(tmp_path: Path) -> None:
         conf,
         "extras",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "extra"
-        chart = "./charts/extra"
+        source = "extra"
         name = "extra"
         """,
     )
@@ -2297,18 +1055,17 @@ def test_section_paths_resolve_inside_the_section_directory(tmp_path: Path) -> N
         conf,
         "platform",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
-        values = ["myapp/values.yaml"]
         """,
     )
 
     config = only_config(load_target_configs(conf, "dev"))
 
-    assert isinstance(config, ChartConfig)
-    assert config.values == [conf / "platform" / "myapp" / "values.yaml"]
+    assert isinstance(config, CopyConfig)
+    assert config.source == conf / "platform" / "myapp"
 
 
 def test_two_sections_may_name_the_same_relative_path(tmp_path: Path) -> None:
@@ -2330,22 +1087,21 @@ def test_two_sections_may_name_the_same_relative_path(tmp_path: Path) -> None:
             conf,
             section,
             f"""\
-            [[helm]]
+            [[copy]]
             namespace = "default"
-            chart = "./charts/myapp"
+            source = "myapp"
             name = "{name}"
-            values = ["values.yaml"]
             """,
         )
 
-    values: dict[str, list[Path]] = {}
+    sources: dict[str, Path] = {}
     for config in all_configs(load_target_configs(conf, "dev")):
-        assert isinstance(config, ChartConfig)
-        values[config.name] = config.values
+        assert isinstance(config, CopyConfig)
+        sources[config.name] = config.source
 
-    assert values == {
-        "base-app": [conf / "base" / "values.yaml"],
-        "platform-app": [conf / "platform" / "values.yaml"],
+    assert sources == {
+        "base-app": conf / "base" / "myapp",
+        "platform-app": conf / "platform" / "myapp",
     }
 
 
@@ -2372,9 +1128,9 @@ def test_section_config_file_names(tmp_path: Path, file_name: str) -> None:
         section_dir,
         file_name,
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2406,9 +1162,9 @@ def test_section_toml_preferred_over_config_toml(tmp_path: Path) -> None:
             section_dir,
             file_name,
             f"""\
-            [[helm]]
+            [[copy]]
             namespace = "default"
-            chart = "./charts/myapp"
+            source = "myapp"
             name = "{name}"
             """,
         )
@@ -2434,15 +1190,15 @@ def test_target_without_vars_loads_with_no_variables(tmp_path: Path) -> None:
         conf,
         "base",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
 
     config = only_config(load_target_configs(conf, "dev"))
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.variables == {}
 
 
@@ -2464,9 +1220,9 @@ def test_sections_accepts_a_single_string(tmp_path: Path) -> None:
         conf,
         "base",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2497,15 +1253,15 @@ def test_section_variables_merge_with_target_vars(tmp_path: Path) -> None:
         [variables]
         domain = "example.com"
 
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
 
     config = only_config(load_target_configs(conf, "dev"))
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.variables == {
         "cluster_name": "platform-dev",
         "domain": "example.com",
@@ -2535,9 +1291,9 @@ def test_section_variable_conflicting_with_target_var_raises(tmp_path: Path) -> 
         [variables]
         cluster_name = "something-else"
 
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2566,9 +1322,9 @@ def test_extra_variables_merge_with_target_vars(tmp_path: Path) -> None:
         conf,
         "base",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2581,7 +1337,7 @@ def test_extra_variables_merge_with_target_vars(tmp_path: Path) -> None:
     )
 
     config = only_config(configs)
-    assert isinstance(config, ChartConfig)
+    assert isinstance(config, CopyConfig)
     assert config.variables == {"cluster_name": "platform-dev", "build_id": 42}
 
 
@@ -2605,9 +1361,9 @@ def test_extra_variable_conflicting_with_target_var_raises(tmp_path: Path) -> No
         conf,
         "base",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2656,9 +1412,9 @@ def test_target_rejected_for_a_blocks_style_config(tmp_path: Path) -> None:
         conf,
         "config.toml",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2680,9 +1436,9 @@ def test_version_one_declares_config_blocks_directly(tmp_path: Path) -> None:
         """\
         version = 1
 
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2723,16 +1479,16 @@ def test_targets_config_rejects_config_blocks(tmp_path: Path) -> None:
         name = "dev"
         sections = ["base"]
 
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
 
     with pytest.raises(
         ValueError,
-        match="Unknown top-level field: 'helm'.*config blocks belong in a "
+        match="Unknown top-level field: 'copy'.*config blocks belong in a "
         "section directory",
     ):
         load_target_configs(conf, "dev")
@@ -2764,9 +1520,9 @@ def test_missing_section_directory_raises(tmp_path: Path) -> None:
         conf,
         "base",
         """\
-        [[helm]]
+        [[copy]]
         namespace = "default"
-        chart = "./charts/myapp"
+        source = "myapp"
         name = "myapp"
         """,
     )
@@ -2816,7 +1572,7 @@ def test_section_without_config_blocks_raises(tmp_path: Path) -> None:
     )
     write_section(conf, "base", '[variables]\ndomain = "example.com"\n')
 
-    with pytest.raises(ValueError, match=r"No .*\[\[helm\]\].* entries found"):
+    with pytest.raises(ValueError, match=r"No .*\[\[copy\]\].* entries found"):
         load_target_configs(conf, "dev")
 
 
