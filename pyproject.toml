@@ -39,3 +39,9 @@ exclude = ["src/manifest_builder/_version.py"]
 [tool.ruff.lint]
 # Config blocks report malformed user configuration consistently as ValueError.
 ignore = ["TRY004"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+publish-url = "https://upload.pypi.org/legacy/"
+default = true
