@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The manifest-builder contributors
 """Shared helpers for naming and building Kubernetes objects.
 
-Config handlers use these to derive Kubernetes-safe names, build ConfigMaps
+Config blocks use these to derive Kubernetes-safe names, build ConfigMaps
 from mounted config files, and inject volumes into pod specs.
 """
 

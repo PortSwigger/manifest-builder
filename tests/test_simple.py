@@ -9,8 +9,8 @@ import yaml
 from pystache.context import KeyNotFoundError
 
 from manifest_builder.blocks.simple import (
+    SimpleBlock,
     SimpleConfig,
-    SimpleConfigHandler,
     generate_simple,
 )
 from manifest_builder.generator import generate_manifests
@@ -556,7 +556,7 @@ def test_generate_manifests_with_simple_config(tmp_path: Path) -> None:
     )
 
     paths = generate_manifests(
-        [SimpleConfigHandler([config])],
+        [SimpleBlock([config])],
         tmp_path / "output",
         repo_root=tmp_path,
     )

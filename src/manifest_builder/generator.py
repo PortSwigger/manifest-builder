@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from manifest_builder.blocks import ConfigBlock, GenerationContext
 from manifest_builder.config import (
     ManifestConfig,
 )
-from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.helm import ChartCacheStats
 from manifest_builder.output import (
     dump_yaml,
@@ -55,43 +55,41 @@ def setup_logging(verbose: bool = False) -> None:
 
 @dataclass(frozen=True)
 class _GenerationJob:
-    # Each job pairs a handler with one of its own configs, an invariant
+    # Each job pairs a block with one of its own configs, an invariant
     # established by _collect_generation_jobs().
-    handler: "ConfigHandler[Any]"
+    block: "ConfigBlock[Any]"
     config: ManifestConfig
 
 
 def _collect_generation_jobs(
-    handlers: "Sequence[ConfigHandler[Any]]",
+    blocks: "Sequence[ConfigBlock[Any]]",
 ) -> list[_GenerationJob]:
-    """Pair each loaded config with exactly one registered handler."""
-    all_configs = tuple(
-        config for handler in handlers for config in handler.iter_configs()
-    )
+    """Pair each loaded config with exactly one registered block."""
+    all_configs = tuple(config for block in blocks for config in block.iter_configs())
     seen_config_ids: set[int] = set()
     jobs: list[_GenerationJob] = []
 
-    for handler in handlers:
-        for config in handler.iter_configs():
+    for block in blocks:
+        for config in block.iter_configs():
             config_id = id(config)
             if config_id in seen_config_ids:
                 raise ValueError(
-                    f"Multiple config handlers selected '{config.name}' "
+                    f"Multiple config blocks selected '{config.name}' "
                     f"({config.namespace})"
                 )
             seen_config_ids.add(config_id)
-            jobs.append(_GenerationJob(handler=handler, config=config))
+            jobs.append(_GenerationJob(block=block, config=config))
 
     missing = [config for config in all_configs if id(config) not in seen_config_ids]
     if missing:
         details = ", ".join(f"{config.name} ({config.namespace})" for config in missing)
-        raise ValueError(f"No config handler registered for: {details}")
+        raise ValueError(f"No config block registered for: {details}")
 
     return jobs
 
 
 def generate_manifests(
-    handlers: "Sequence[ConfigHandler[Any]]",
+    blocks: "Sequence[ConfigBlock[Any]]",
     output_dir: Path,
     repo_root: Path,
     *,
@@ -106,7 +104,7 @@ def generate_manifests(
     Generate manifests for all configured apps.
 
     Args:
-        handlers: Loaded config handlers
+        blocks: Loaded config blocks
         output_dir: Directory to write generated manifests
         repo_root: Repository root for resolving relative paths
         images: Dict mapping image variable names to image references for template rendering
@@ -126,7 +124,7 @@ def generate_manifests(
         ValueError: If configuration validation fails
         RuntimeError: If manifest generation fails
     """
-    if not handlers:
+    if not blocks:
         logger.info("No configs configured")
         return set()
 
@@ -135,7 +133,7 @@ def generate_manifests(
 
     owned_namespaces = owned_namespaces or set()
     managed_namespaces = managed_namespaces or None
-    jobs = _collect_generation_jobs(handlers)
+    jobs = _collect_generation_jobs(blocks)
     if not jobs:
         logger.info("No configs configured")
         return set()
@@ -143,7 +141,7 @@ def generate_manifests(
     # Validate all of the configs first
     for job in jobs:
         config = job.config
-        job.handler.validate(config, repo_root)
+        job.block.validate(config, repo_root)
         if config.namespace in owned_namespaces:
             raise ValueError(
                 f"Config '{config.name}' targets namespace '{config.namespace}' "
@@ -167,7 +165,7 @@ def generate_manifests(
         config = job.config
         try:
             logger.info(f"Generating manifest for {config.name} ({config.namespace})")
-            return job.handler.generate(config, context)
+            return job.block.generate(config, context)
         except ManifestError:
             raise
         except Exception as e:
@@ -206,22 +204,22 @@ def generate_manifests(
             logger.error(f"✗ {config.name} ({config.namespace})")
             raise ManifestError(config.name, e) from e
 
-    grouped_jobs: list[tuple[ConfigHandler[Any], list[_GenerationJob]]] = []
+    grouped_jobs: list[tuple[ConfigBlock[Any], list[_GenerationJob]]] = []
     for job in jobs:
-        if not grouped_jobs or grouped_jobs[-1][0] is not job.handler:
-            grouped_jobs.append((job.handler, []))
+        if not grouped_jobs or grouped_jobs[-1][0] is not job.block:
+            grouped_jobs.append((job.block, []))
         grouped_jobs[-1][1].append(job)
 
-    for handler, handler_jobs in grouped_jobs:
-        # Handlers opt in to concurrent rendering; the rest stay sequential.
-        if handler.parallel_safe and len(handler_jobs) > 1:
-            worker_count = min(handler.max_workers, len(handler_jobs))
+    for block, block_jobs in grouped_jobs:
+        # Blocks opt in to concurrent rendering; the rest stay sequential.
+        if block.parallel_safe and len(block_jobs) > 1:
+            worker_count = min(block.max_workers, len(block_jobs))
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                generated_paths = executor.map(generate_job, handler_jobs)
-                for job, paths in zip(handler_jobs, generated_paths, strict=True):
+                generated_paths = executor.map(generate_job, block_jobs)
+                for job, paths in zip(block_jobs, generated_paths, strict=True):
                     record_paths(job, paths)
         else:
-            for job in handler_jobs:
+            for job in block_jobs:
                 record_paths(job, generate_job(job))
 
     # Catch any output that landed in an owned namespace via metadata override

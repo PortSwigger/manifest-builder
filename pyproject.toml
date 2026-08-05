@@ -37,7 +37,7 @@ version-file = "src/manifest_builder/_version.py"
 exclude = ["src/manifest_builder/_version.py"]
 
 [tool.ruff.lint]
-# Config handlers report malformed user configuration consistently as ValueError.
+# Config blocks report malformed user configuration consistently as ValueError.
 ignore = ["TRY004"]
 
 [[tool.uv.index]]

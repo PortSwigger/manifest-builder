@@ -348,7 +348,7 @@ def test_generate_accepts_config_and_output_paths(
         ]
     )
     mock_generate_manifests.assert_called_once_with(
-        handlers=["resolved"],
+        blocks=["resolved"],
         output_dir=output,
         repo_root=tmp_path,
         images={"app": "image"},
@@ -545,7 +545,7 @@ def test_generate_namespace_mode_writes_owner_file(
     )
     mock_load_owned_namespaces.assert_has_calls([call(config), call(output)])
     mock_generate_manifests.assert_called_once_with(
-        handlers=["resolved"],
+        blocks=["resolved"],
         output_dir=output,
         repo_root=tmp_path,
         images={},
