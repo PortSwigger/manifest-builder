@@ -464,12 +464,13 @@ def test_load_configs_passes_the_default_image_to_blocks(tmp_path: Path) -> None
 
 def test_resolve_configs_offers_the_helmfile_to_every_block() -> None:
     """Every block gets a chance to resolve references once loading is done."""
-    blocks = [CopyBlock(), ProbeBlock()]
+    probe = ProbeBlock()
+    blocks: list[ConfigBlock[Any]] = [CopyBlock(), probe]
 
     resolved = resolve_configs(blocks, None)
 
     assert resolved is blocks
-    assert blocks[1].resolved_with == [None]
+    assert probe.resolved_with == [None]
 
 
 # ---------------------------------------------------------------------------
