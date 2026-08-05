@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: The manifest-builder contributors
-"""The config block interface, and the bundled block implementations.
+"""The config block interface, and the one block this package ships.
 
-Each module in this package owns one top-level TOML key: its config
+A module implementing a block owns one top-level TOML key: its config
 dataclass, the parser that builds it, its validation, and the
-:class:`ConfigBlock` subclass that ties them together. Those modules depend on
-the shared toolkit (config, k8s, output) and never on each other.
+:class:`ConfigBlock` subclass that ties them together. Such a module depends on
+the shared toolkit (config, helm, k8s, output) and never on another block.
+
+Only ``copy`` lives here. Every other block belongs to the configuration
+directory that uses it, loaded from its ``plugins`` subdirectory, so a
+deployment can shape and change its own blocks. See
+:mod:`manifest_builder.discovery`.
 """
 
 from abc import ABC, abstractmethod
@@ -39,7 +44,7 @@ class ConfigBlock[ConfigT: ManifestConfig](ABC):
     Parameterized with the config dataclass the block owns, so ``validate``
     and ``generate`` receive that type directly:
 
-        class SimpleBlock(ConfigBlock[SimpleConfig]):
+        class CopyBlock(ConfigBlock[CopyConfig]):
             ...
     """
 

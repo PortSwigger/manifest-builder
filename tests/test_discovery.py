@@ -79,7 +79,7 @@ class GreetingBlock(ConfigBlock[GreetingConfig]):
         return write_documents([doc], context.output_dir, config.namespace, config.name)
 '''
 
-BUILTIN_KEYS = ["copy", "helm", "simple"]
+BUILTIN_KEYS = ["copy"]
 
 
 @pytest.fixture(autouse=True)
@@ -260,10 +260,10 @@ def test_broken_plugin_reports_its_path(tmp_path: Path) -> None:
 
 def test_plugin_claiming_a_builtin_key_is_rejected(tmp_path: Path) -> None:
     _write_plugin(
-        tmp_path, "clash", GREETING_PLUGIN.replace('return "greeting"', 'return "helm"')
+        tmp_path, "clash", GREETING_PLUGIN.replace('return "greeting"', 'return "copy"')
     )
 
-    with pytest.raises(ValueError, match="both claim the top-level key 'helm'"):
+    with pytest.raises(ValueError, match="both claim the top-level key 'copy'"):
         discover_blocks(tmp_path)
 
 
