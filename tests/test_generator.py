@@ -14,7 +14,7 @@ from pystache.context import KeyNotFoundError
 
 from manifest_builder.blocks.helm import (
     ChartConfig,
-    HelmConfigHandler,
+    HelmBlock,
     _generate_helm_manifests,
 )
 from manifest_builder.generator import _ensure_namespaces, generate_manifests
@@ -197,7 +197,7 @@ def test_generate_manifests_summarizes_chart_cache(
         "manifest_builder.blocks.helm.run_helm_template", return_value=NAMESPACED_YAML
     ):
         generate_manifests(
-            [HelmConfigHandler([config])],
+            [HelmBlock([config])],
             tmp_path / "out",
             repo_root=tmp_path,
             charts_dir=charts_dir,
@@ -255,7 +255,7 @@ data: {{}}
         ),
     ):
         written = generate_manifests(
-            [HelmConfigHandler(configs)],
+            [HelmBlock(configs)],
             tmp_path / "out",
             repo_root=tmp_path,
         )
@@ -282,7 +282,7 @@ def test_generate_manifests_rejects_config_in_owned_namespace(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="owned by another service"):
         generate_manifests(
-            [HelmConfigHandler([config])],
+            [HelmBlock([config])],
             tmp_path / "out",
             repo_root=tmp_path,
             owned_namespaces={"team-a"},
@@ -312,7 +312,7 @@ def test_generate_manifests_preserves_files_in_owned_namespace(tmp_path: Path) -
         "manifest_builder.blocks.helm.run_helm_template", return_value=NAMESPACED_YAML
     ):
         written = generate_manifests(
-            [HelmConfigHandler([config])],
+            [HelmBlock([config])],
             output_dir,
             repo_root=tmp_path,
             charts_dir=tmp_path / "charts",
@@ -361,7 +361,7 @@ data: {}
         ),
     ):
         written = generate_manifests(
-            [HelmConfigHandler([config])],
+            [HelmBlock([config])],
             output_dir,
             repo_root=tmp_path,
             charts_dir=tmp_path / "charts",
@@ -410,7 +410,7 @@ data: {}
         pytest.raises(ValueError, match="owned by another service"),
     ):
         generate_manifests(
-            [HelmConfigHandler([config])],
+            [HelmBlock([config])],
             tmp_path / "out",
             repo_root=tmp_path,
             charts_dir=tmp_path / "charts",
@@ -1447,7 +1447,7 @@ def test_name_overrides_avoid_helm_configmap_collisions(tmp_path: Path) -> None:
 
     with mock.patch("manifest_builder.blocks.helm.run_helm_template", return_value=""):
         paths = generate_manifests(
-            [HelmConfigHandler(configs)],
+            [HelmBlock(configs)],
             output_dir,
             repo_root=tmp_path,
             charts_dir=tmp_path / "charts",

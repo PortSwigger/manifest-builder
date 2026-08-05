@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: The manifest-builder contributors
-"""Tests for config handler discovery."""
+"""Tests for config block discovery."""
 
 import logging
 import sys
@@ -13,7 +13,7 @@ import yaml
 from manifest_builder.discovery import (
     PLUGINS_PACKAGE,
     _quoted_list,
-    discover_handlers,
+    discover_blocks,
 )
 
 # A plugin defining one config block, mirroring what a config repo would ship.
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from manifest_builder.handlers import ConfigHandler, GenerationContext
+from manifest_builder.blocks import ConfigBlock, GenerationContext
 from manifest_builder.output import write_documents
 
 
@@ -36,7 +36,7 @@ class GreetingConfig:
     message: str = "hello"
 
 
-class GreetingConfigHandler(ConfigHandler[GreetingConfig]):
+class GreetingBlock(ConfigBlock[GreetingConfig]):
     def __init__(self, configs: Sequence[GreetingConfig] | None = None) -> None:
         self.configs = list(configs or [])
 
@@ -103,26 +103,26 @@ def _write_plugin(config_dir: Path, name: str, source: str) -> Path:
 
 
 def test_discovers_builtin_blocks() -> None:
-    keys = [handler.top_level_config_name() for handler in discover_handlers()]
+    keys = [block.top_level_config_name() for block in discover_blocks()]
     assert keys == BUILTIN_KEYS
 
 
 def test_discovery_is_sorted_by_config_key() -> None:
     """Ordering must not depend on filesystem or import order."""
-    keys = [handler.top_level_config_name() for handler in discover_handlers()]
+    keys = [block.top_level_config_name() for block in discover_blocks()]
     assert keys == sorted(keys)
 
 
 def test_config_dir_without_plugins_yields_only_builtins(tmp_path: Path) -> None:
-    keys = [handler.top_level_config_name() for handler in discover_handlers(tmp_path)]
+    keys = [block.top_level_config_name() for block in discover_blocks(tmp_path)]
     assert keys == BUILTIN_KEYS
 
 
 def test_discovers_a_plugin_from_the_config_dir(tmp_path: Path) -> None:
     _write_plugin(tmp_path, "greeting", GREETING_PLUGIN)
 
-    handlers = discover_handlers(tmp_path)
-    keys = [handler.top_level_config_name() for handler in handlers]
+    blocks = discover_blocks(tmp_path)
+    keys = [block.top_level_config_name() for block in blocks]
 
     assert keys == sorted([*BUILTIN_KEYS, "greeting"])
 
@@ -131,12 +131,12 @@ def test_plugin_modules_do_not_shadow_installed_modules(tmp_path: Path) -> None:
     """A plugin named after a stdlib module must not become 'import json'."""
     _write_plugin(tmp_path, "json", GREETING_PLUGIN)
 
-    discover_handlers(tmp_path)
+    discover_blocks(tmp_path)
 
     import json
 
     assert json.dumps({"a": 1}) == '{"a": 1}'
-    assert not hasattr(json, "GreetingConfigHandler")
+    assert not hasattr(json, "GreetingBlock")
 
 
 def test_plugin_can_import_a_sibling_module(tmp_path: Path) -> None:
@@ -153,16 +153,16 @@ def test_plugin_can_import_a_sibling_module(tmp_path: Path) -> None:
         ),
     )
 
-    handlers = {h.top_level_config_name(): h for h in discover_handlers(tmp_path)}
+    blocks = {h.top_level_config_name(): h for h in discover_blocks(tmp_path)}
 
-    assert "greeting" in handlers
+    assert "greeting" in blocks
 
 
 def test_underscored_and_hidden_files_are_skipped(tmp_path: Path) -> None:
     _write_plugin(tmp_path, "_helpers", "raise AssertionError('must not import')\n")
     (tmp_path / "plugins" / "notes.txt").write_text("not python\n")
 
-    keys = [handler.top_level_config_name() for handler in discover_handlers(tmp_path)]
+    keys = [block.top_level_config_name() for block in discover_blocks(tmp_path)]
 
     assert keys == BUILTIN_KEYS
 
@@ -175,7 +175,7 @@ def test_test_modules_beside_plugins_are_not_imported(
     _write_plugin(tmp_path, "greeting", GREETING_PLUGIN)
     _write_plugin(tmp_path, name, "raise AssertionError('must not import')\n")
 
-    keys = [handler.top_level_config_name() for handler in discover_handlers(tmp_path)]
+    keys = [block.top_level_config_name() for block in discover_blocks(tmp_path)]
 
     assert keys == sorted([*BUILTIN_KEYS, "greeting"])
 
@@ -190,7 +190,7 @@ def test_a_tests_package_is_not_imported_as_a_plugin(
     tests_dir.mkdir()
     (tests_dir / "__init__.py").write_text("raise AssertionError('must not import')\n")
 
-    keys = [handler.top_level_config_name() for handler in discover_handlers(tmp_path)]
+    keys = [block.top_level_config_name() for block in discover_blocks(tmp_path)]
 
     assert keys == sorted([*BUILTIN_KEYS, "greeting"])
 
@@ -214,7 +214,7 @@ def test_logs_a_summary_of_detected_plugins(
     _write_plugin(tmp_path, "greeting", GREETING_PLUGIN)
     caplog.set_level(logging.INFO, logger="manifest_builder.discovery")
 
-    discover_handlers(tmp_path)
+    discover_blocks(tmp_path)
 
     assert 'Found 1 plugin, now handling config block type "greeting"' in caplog.text
 
@@ -232,7 +232,7 @@ def test_plugin_summary_lists_every_block_type(
         )
     caplog.set_level(logging.INFO, logger="manifest_builder.discovery")
 
-    discover_handlers(tmp_path)
+    discover_blocks(tmp_path)
 
     assert (
         "Found 3 plugins, now handling config block types "
@@ -246,7 +246,7 @@ def test_no_plugin_summary_without_plugins(
     """A config dir with no plugins should not log about them at all."""
     caplog.set_level(logging.INFO, logger="manifest_builder.discovery")
 
-    discover_handlers(tmp_path)
+    discover_blocks(tmp_path)
 
     assert "plugin" not in caplog.text
 
@@ -255,7 +255,7 @@ def test_broken_plugin_reports_its_path(tmp_path: Path) -> None:
     _write_plugin(tmp_path, "broken", "import nonexistent_module_xyz\n")
 
     with pytest.raises(ValueError, match="Failed to load plugin 'broken'"):
-        discover_handlers(tmp_path)
+        discover_blocks(tmp_path)
 
 
 def test_plugin_claiming_a_builtin_key_is_rejected(tmp_path: Path) -> None:
@@ -264,7 +264,7 @@ def test_plugin_claiming_a_builtin_key_is_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="both claim the top-level key 'helm'"):
-        discover_handlers(tmp_path)
+        discover_blocks(tmp_path)
 
 
 def test_switching_config_dir_reloads_plugins(tmp_path: Path) -> None:
@@ -280,8 +280,8 @@ def test_switching_config_dir_reloads_plugins(tmp_path: Path) -> None:
         GREETING_PLUGIN.replace("greeting", "farewell").replace("Greeting", "Farewell"),
     )
 
-    first_keys = [h.top_level_config_name() for h in discover_handlers(first)]
-    second_keys = [h.top_level_config_name() for h in discover_handlers(second)]
+    first_keys = [h.top_level_config_name() for h in discover_blocks(first)]
+    second_keys = [h.top_level_config_name() for h in discover_blocks(second)]
 
     assert "greeting" in first_keys and "farewell" not in first_keys
     assert "farewell" in second_keys and "greeting" not in second_keys
@@ -290,7 +290,7 @@ def test_switching_config_dir_reloads_plugins(tmp_path: Path) -> None:
 def test_replaced_plugin_module_is_reloaded(tmp_path: Path) -> None:
     """A checkout at the same path must not serve the previous plugin's code."""
     _write_plugin(tmp_path, "greeting", GREETING_PLUGIN)
-    first = discover_handlers(tmp_path)
+    first = discover_blocks(tmp_path)
     assert "greeting" in [h.top_level_config_name() for h in first]
 
     # Same path, new content, as a fresh checkout over the top would leave it.
@@ -299,7 +299,7 @@ def test_replaced_plugin_module_is_reloaded(tmp_path: Path) -> None:
         "greeting",
         GREETING_PLUGIN.replace('return "greeting"', 'return "hail"'),
     )
-    second = discover_handlers(tmp_path)
+    second = discover_blocks(tmp_path)
 
     keys = [h.top_level_config_name() for h in second]
     assert "hail" in keys
@@ -309,24 +309,24 @@ def test_replaced_plugin_module_is_reloaded(tmp_path: Path) -> None:
 def test_plugin_added_after_a_previous_scan_is_found(tmp_path: Path) -> None:
     """Import-system directory caches must not hide a newly added plugin."""
     _write_plugin(tmp_path, "greeting", GREETING_PLUGIN)
-    discover_handlers(tmp_path)
+    discover_blocks(tmp_path)
 
     _write_plugin(
         tmp_path,
         "farewell",
         GREETING_PLUGIN.replace("greeting", "farewell").replace("Greeting", "Farewell"),
     )
-    keys = [h.top_level_config_name() for h in discover_handlers(tmp_path)]
+    keys = [h.top_level_config_name() for h in discover_blocks(tmp_path)]
 
     assert "farewell" in keys and "greeting" in keys
 
 
 def test_plugin_removed_after_a_previous_scan_is_gone(tmp_path: Path) -> None:
     _write_plugin(tmp_path, "greeting", GREETING_PLUGIN)
-    discover_handlers(tmp_path)
+    discover_blocks(tmp_path)
 
     (tmp_path / "plugins" / "greeting.py").unlink()
-    keys = [h.top_level_config_name() for h in discover_handlers(tmp_path)]
+    keys = [h.top_level_config_name() for h in discover_blocks(tmp_path)]
 
     assert keys == BUILTIN_KEYS
 
@@ -335,7 +335,7 @@ def test_plugin_import_writes_no_bytecode_cache(tmp_path: Path) -> None:
     """__pycache__ in the config checkout would both litter and go stale."""
     _write_plugin(tmp_path, "greeting", GREETING_PLUGIN)
 
-    discover_handlers(tmp_path)
+    discover_blocks(tmp_path)
 
     assert not list((tmp_path / "plugins").glob("**/__pycache__"))
     assert not sys.dont_write_bytecode
@@ -408,7 +408,7 @@ def test_concurrent_discovery_from_two_config_dirs(tmp_path: Path) -> None:
 
     def load(item: tuple[str, Path]) -> tuple[str, list[str]]:
         key, config_dir = item
-        return key, [h.top_level_config_name() for h in discover_handlers(config_dir)]
+        return key, [h.top_level_config_name() for h in discover_blocks(config_dir)]
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(load, dirs * 8))

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The manifest-builder contributors
 """YAML serialization and manifest file writing.
 
-Config handlers hand finished Kubernetes documents to :func:`write_documents`
+Config blocks hand finished Kubernetes documents to :func:`write_documents`
 or :func:`write_manifests`, which route each object to the namespace or
 ``cluster`` directory under the output root.
 """

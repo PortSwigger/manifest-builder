@@ -13,12 +13,12 @@ from typing import Any
 import pystache
 from pystache.common import MissingTags
 
+from manifest_builder.blocks import ConfigBlock, GenerationContext
 from manifest_builder.config import (
     TemplateValue,
     parse_variables,
     validate_known_fields,
 )
-from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.helm import ChartCacheStats, pull_chart, run_helm_template
 from manifest_builder.helmfile import Helmfile
 from manifest_builder.k8s import (
@@ -98,7 +98,7 @@ def validate_chart_config(config: ChartConfig, repo_root: Path) -> None:
         raise ValueError(f"init script not found for '{config.name}': {config.init}")
 
 
-class HelmConfigHandler(ConfigHandler[ChartConfig]):
+class HelmBlock(ConfigBlock[ChartConfig]):
     """Generate manifests for Helm chart configs."""
 
     # Each chart renders into its own temporary directory, so renders may

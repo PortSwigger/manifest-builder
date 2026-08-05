@@ -13,7 +13,7 @@ from manifest_builder.helmfile import Helmfile
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from manifest_builder.handlers import ConfigHandler
+    from manifest_builder.blocks import ConfigBlock
 
 DEFAULT_REPLICA_COUNT = 2
 TemplateValue = str | int | float | bool
@@ -140,7 +140,7 @@ class ManifestConfig(Protocol):
     """What the generation orchestrator needs from any config block entry.
 
     Structural rather than a union of the known config types, so a config
-    handler can bring its own dataclass without this module knowing about it.
+    block can bring its own dataclass without this module knowing about it.
     Declared as read-only properties to let a config narrow ``namespace`` to
     ``str`` when it always targets one.
     """
@@ -516,12 +516,12 @@ def parse_variables(
 
 def load_configs(
     config_dir: Path,
-    handlers: "Sequence[ConfigHandler]",
+    blocks: "Sequence[ConfigBlock]",
     extra_variables: dict[str, TemplateValue] | None = None,
     default_namespace: str | None = None,
     default_image: str | None = None,
     target: str | None = None,
-) -> "Sequence[ConfigHandler]":
+) -> "Sequence[ConfigBlock]":
     """
     Load app configurations from the config directory.
 
@@ -530,7 +530,7 @@ def load_configs(
     ``version`` field:
 
     ``version = 1``, or no ``version`` at all, declares config blocks directly
-    as top-level tables owned by the supplied config handlers.
+    as top-level tables owned by the supplied config blocks.
 
     ``version = 2`` instead declares ``[[target]]`` entries. Each target names
     the sections it is built from and the variables they are rendered with, and
@@ -540,19 +540,19 @@ def load_configs(
 
     Args:
         config_dir: Directory containing TOML configuration files
-        handlers: Config handlers to populate
+        blocks: Config blocks to populate
         extra_variables: Additional template variables merged into the
             variables a config block is rendered with. Keys that overlap with
             variables from the config directory are rejected with ValueError.
         default_namespace: Namespace to use when a config entry omits its
             ``namespace`` field.
-        default_image: Image override passed to config handlers in namespace mode.
+        default_image: Image override passed to config blocks in namespace mode.
         target: Name of the target to load, for a ``version = 2`` config
             directory. Required for those, and rejected for the older layout,
             which has no targets to choose between.
 
     Returns:
-        Handlers populated with the config items they own
+        Blocks populated with the config items they own
 
     Raises:
         FileNotFoundError: If config_dir, a top-level config file, or a
@@ -568,27 +568,27 @@ def load_configs(
     toml_file = find_config_file(config_dir)
     data = load_toml_file(toml_file)
 
-    handler_by_name: dict[str, ConfigHandler] = {}
-    for handler in handlers:
-        name = handler.top_level_config_name()
-        if name in handler_by_name:
-            raise ValueError(f"Duplicate config handler for top-level key '{name}'")
-        handler_by_name[name] = handler
-    if not handler_by_name:
-        raise ValueError("No config handlers registered")
+    block_by_name: dict[str, ConfigBlock] = {}
+    for block in blocks:
+        name = block.top_level_config_name()
+        if name in block_by_name:
+            raise ValueError(f"Duplicate config block for top-level key '{name}'")
+        block_by_name[name] = block
+    if not block_by_name:
+        raise ValueError("No config blocks registered")
 
     if config_version(data, toml_file) == TARGETS_VERSION:
         _load_target_sections(
             config_dir,
             toml_file,
             data,
-            handler_by_name,
+            block_by_name,
             target,
             extra_variables,
             default_namespace,
             default_image,
         )
-        return handlers
+        return blocks
 
     if target is not None:
         raise ValueError(
@@ -605,21 +605,21 @@ def load_configs(
     _load_config_blocks(
         toml_file,
         data,
-        handler_by_name,
+        block_by_name,
         variables,
         default_namespace,
         default_image,
         extra_allowed_fields={"version"},
     )
 
-    return handlers
+    return blocks
 
 
 def _load_target_sections(
     config_dir: Path,
     toml_file: Path,
     data: dict,
-    handler_by_name: "dict[str, ConfigHandler]",
+    block_by_name: "dict[str, ConfigBlock]",
     target: str | None,
     extra_variables: dict[str, TemplateValue] | None,
     default_namespace: str | None,
@@ -663,7 +663,7 @@ def _load_target_sections(
         _load_config_blocks(
             section_file,
             section_data,
-            handler_by_name,
+            block_by_name,
             variables,
             default_namespace,
             default_image,
@@ -673,14 +673,14 @@ def _load_target_sections(
 def _load_config_blocks(
     toml_file: Path,
     data: dict,
-    handler_by_name: "dict[str, ConfigHandler]",
+    block_by_name: "dict[str, ConfigBlock]",
     variables: dict[str, TemplateValue],
     default_namespace: str | None,
     default_image: str | None,
     extra_allowed_fields: Collection[str] = (),
 ) -> None:
-    """Hand the config blocks in one TOML file to the handlers that own them."""
-    allowed_top_level = set(handler_by_name) | {"variables"} | set(extra_allowed_fields)
+    """Hand each top-level table in one TOML file to the block that owns it."""
+    allowed_top_level = set(block_by_name) | {"variables"} | set(extra_allowed_fields)
     unknown_top_level = sorted(set(data) - allowed_top_level)
     if unknown_top_level:
         fields = ", ".join(
@@ -689,24 +689,24 @@ def _load_config_blocks(
         suffix = "s" if len(unknown_top_level) != 1 else ""
         raise ValueError(f"Unknown top-level field{suffix}: {fields} in {toml_file}")
 
-    present_handler_names = sorted(name for name in handler_by_name if name in data)
-    if not present_handler_names:
-        expected = ", ".join(f"[[{name}]]" for name in sorted(handler_by_name))
+    present_block_names = sorted(name for name in block_by_name if name in data)
+    if not present_block_names:
+        expected = ", ".join(f"[[{name}]]" for name in sorted(block_by_name))
         raise ValueError(f"No {expected} entries found in {toml_file}")
 
-    # Hand handlers the resolved variables, so a block is rendered with its
+    # Hand each block the resolved variables, so it is rendered with its
     # target's and section's variables regardless of which file declared them.
     data["variables"] = variables
-    for name in present_handler_names:
-        handler_by_name[name].load_config(
+    for name in present_block_names:
+        block_by_name[name].load_config(
             data[name], toml_file, data, default_namespace, default_image
         )
 
 
 def resolve_configs(
-    handlers: "Sequence[ConfigHandler]",
+    blocks: "Sequence[ConfigBlock]",
     helmfile: Helmfile | None,
-) -> "Sequence[ConfigHandler]":
+) -> "Sequence[ConfigBlock]":
     """
     Resolve helmfile release references, filling in chart/repo/version.
 
@@ -714,15 +714,15 @@ def resolve_configs(
     unchanged.
 
     Args:
-        handlers: Config handlers populated by load_configs()
+        blocks: Config blocks populated by load_configs()
         helmfile: Parsed releases.yaml, or None if not present
 
     Returns:
-        Handlers with all release references resolved
+        Blocks with all release references resolved
 
     Raises:
         ValueError: If a release reference cannot be resolved
     """
-    for handler in handlers:
-        handler.resolve(helmfile)
-    return handlers
+    for block in blocks:
+        block.resolve(helmfile)
+    return blocks

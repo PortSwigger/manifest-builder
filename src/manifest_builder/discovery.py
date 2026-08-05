@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: The manifest-builder contributors
-"""Finding the config handlers available for a generation run.
+"""Finding the config blocks available for a generation run.
 
-Built-in handlers are discovered by walking :mod:`manifest_builder.blocks`.
+Built-in blocks are discovered by walking :mod:`manifest_builder.blocks`.
 A config directory may supply more of its own in a ``plugins`` subdirectory,
 letting a config repository add a config block without changing this package.
 """
@@ -19,7 +19,7 @@ from threading import Lock
 from types import ModuleType
 from typing import Any
 
-from manifest_builder.handlers import ConfigHandler
+from manifest_builder.blocks import ConfigBlock
 
 logger = logging.getLogger(__name__)
 
@@ -40,43 +40,43 @@ PLUGINS_DIR_NAME = "plugins"
 PLUGINS_PACKAGE = "manifest_builder_plugins"
 
 
-def discover_handlers(config_dir: Path | None = None) -> list[ConfigHandler[Any]]:
-    """Return one instance of every available config handler.
+def discover_blocks(config_dir: Path | None = None) -> list[ConfigBlock[Any]]:
+    """Return one instance of every available config block.
 
     Args:
         config_dir: Config directory to scan for a ``plugins`` subdirectory.
-            When None, only built-in handlers are returned.
+            When None, only built-in blocks are returned.
 
     Returns:
-        Handler instances ordered by the top-level TOML key they own, so a run
+        Block instances ordered by the top-level TOML key they own, so a run
         is reproducible regardless of filesystem or import order.
 
     Raises:
-        ValueError: If two handlers claim the same top-level key.
+        ValueError: If two blocks claim the same top-level key.
     """
-    classes = list(_builtin_handler_classes())
-    plugin_classes: list[type[ConfigHandler[Any]]] = []
+    classes = list(_builtin_block_classes())
+    plugin_classes: list[type[ConfigBlock[Any]]] = []
     plugin_count = 0
     if config_dir is not None:
         plugin_count, plugin_classes = _load_plugins(config_dir)
         classes.extend(plugin_classes)
 
-    handlers: dict[str, ConfigHandler[Any]] = {}
-    for handler_class in classes:
-        handler = handler_class()
-        key = handler.top_level_config_name()
-        existing = handlers.get(key)
+    blocks: dict[str, ConfigBlock[Any]] = {}
+    for block_class in classes:
+        block = block_class()
+        key = block.top_level_config_name()
+        existing = blocks.get(key)
         if existing is not None:
             raise ValueError(
-                f"Config handlers {type(existing).__name__} and "
-                f"{handler_class.__name__} both claim the top-level key '{key}'"
+                f"Config blocks {type(existing).__name__} and "
+                f"{block_class.__name__} both claim the top-level key '{key}'"
             )
-        handlers[key] = handler
+        blocks[key] = block
 
     if plugin_count:
         from_plugins = set(plugin_classes)
         plugin_keys = sorted(
-            key for key, handler in handlers.items() if type(handler) in from_plugins
+            key for key, block in blocks.items() if type(block) in from_plugins
         )
         logger.info(
             "Found %d plugin%s, now handling config block type%s %s",
@@ -86,7 +86,7 @@ def discover_handlers(config_dir: Path | None = None) -> list[ConfigHandler[Any]
             _quoted_list(plugin_keys),
         )
 
-    return [handlers[key] for key in sorted(handlers)]
+    return [blocks[key] for key in sorted(blocks)]
 
 
 def _quoted_list(names: list[str]) -> str:
@@ -99,30 +99,30 @@ def _quoted_list(names: list[str]) -> str:
     return f"{', '.join(quoted[:-1])}, and {quoted[-1]}"
 
 
-def _builtin_handler_classes() -> Iterator[type[ConfigHandler[Any]]]:
-    """Yield handler classes defined in the bundled blocks package."""
+def _builtin_block_classes() -> Iterator[type[ConfigBlock[Any]]]:
+    """Yield block classes defined in the bundled blocks package."""
     package = importlib.import_module(BLOCKS_PACKAGE)
     for module_info in pkgutil.iter_modules(package.__path__):
         if module_info.name.startswith("_"):
             continue
         module = importlib.import_module(f"{BLOCKS_PACKAGE}.{module_info.name}")
-        yield from _handler_classes_in(module)
+        yield from _block_classes_in(module)
 
 
 def _load_plugins(
     config_dir: Path,
-) -> tuple[int, list[type[ConfigHandler[Any]]]]:
+) -> tuple[int, list[type[ConfigBlock[Any]]]]:
     """Import plugin modules under ``<config_dir>/plugins``.
 
     Returns:
-        The number of plugin modules that contributed at least one handler,
-        and the handler classes they define.
+        The number of plugin modules that contributed at least one block,
+        and the block classes they define.
     """
     plugins_dir = config_dir / PLUGINS_DIR_NAME
     if not plugins_dir.is_dir():
         return 0, []
 
-    classes: list[type[ConfigHandler[Any]]] = []
+    classes: list[type[ConfigBlock[Any]]] = []
     contributing = 0
 
     with _PLUGIN_LOAD_LOCK:
@@ -143,7 +143,7 @@ def _load_plugins(
                     raise ValueError(
                         f"Failed to load plugin '{name}' from {plugins_dir}: {e}"
                     ) from e
-                found = list(_handler_classes_in(module))
+                found = list(_block_classes_in(module))
                 if found:
                     contributing += 1
                     logger.debug(
@@ -223,10 +223,10 @@ def _register_plugins_package(plugins_dir: Path) -> None:
     sys.modules[PLUGINS_PACKAGE] = package
 
 
-def _handler_classes_in(module: ModuleType) -> Iterator[type[ConfigHandler[Any]]]:
-    """Yield concrete ConfigHandler subclasses a module defines itself."""
+def _block_classes_in(module: ModuleType) -> Iterator[type[ConfigBlock[Any]]]:
+    """Yield concrete ConfigBlock subclasses a module defines itself."""
     for _, member in inspect.getmembers(module, inspect.isclass):
-        if not issubclass(member, ConfigHandler) or member is ConfigHandler:
+        if not issubclass(member, ConfigBlock) or member is ConfigBlock:
             continue
         # Skip classes merely imported into the module, and abstract bases.
         if member.__module__ != module.__name__ or inspect.isabstract(member):

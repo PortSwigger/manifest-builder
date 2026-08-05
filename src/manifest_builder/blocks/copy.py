@@ -11,12 +11,12 @@ import pystache
 import yaml
 from pystache.common import MissingTags
 
+from manifest_builder.blocks import ConfigBlock, GenerationContext
 from manifest_builder.config import (
     TemplateValue,
     parse_variables,
     validate_known_fields,
 )
-from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.k8s import (
     CLUSTER_SCOPED_KINDS,
     config_checksum,
@@ -56,7 +56,7 @@ def validate_copy_config(config: CopyConfig) -> None:
             )
 
 
-class CopyConfigHandler(ConfigHandler[CopyConfig]):
+class CopyBlock(ConfigBlock[CopyConfig]):
     """Generate manifests for copy configs."""
 
     def __init__(self, configs: Sequence[CopyConfig] | None = None) -> None:

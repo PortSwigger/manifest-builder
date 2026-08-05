@@ -10,13 +10,13 @@ from typing import Any
 
 import yaml
 
+from manifest_builder.blocks import ConfigBlock, GenerationContext
 from manifest_builder.config import (
     DEFAULT_REPLICA_COUNT,
     TemplateValue,
     parse_variables,
     validate_known_fields,
 )
-from manifest_builder.handlers import ConfigHandler, GenerationContext
 from manifest_builder.k8s import (
     CLUSTER_SCOPED_KINDS,
     config_checksum,
@@ -82,7 +82,7 @@ def validate_simple_config(config: SimpleConfig) -> None:
 IAM_ROLE_ANNOTATION = "eks.amazonaws.com/role-arn"
 
 
-class SimpleConfigHandler(ConfigHandler[SimpleConfig]):
+class SimpleBlock(ConfigBlock[SimpleConfig]):
     """Generate manifests for simple configs."""
 
     def __init__(self, configs: Sequence[SimpleConfig] | None = None) -> None:

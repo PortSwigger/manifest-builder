@@ -164,7 +164,7 @@ into a `plugins/` subdirectory:
 conf/
 ├── config.toml
 └── plugins/
-    ├── public_repo.py                  # defines PublicRepoConfigHandler
+    ├── public_repo.py                  # defines PublicRepoBlock
     ├── templates/
     │   └── public_repo/                # namespaced per block
     │       └── repository.yaml
@@ -172,7 +172,7 @@ conf/
         └── test_public_repo.py
 ```
 
-Every module in `plugins/` is imported, and any concrete `ConfigHandler`
+Every module in `plugins/` is imported, and any concrete `ConfigBlock`
 subclass it defines is registered under the top-level TOML key its
 `top_level_config_name()` returns. A plugin block is used exactly like a
 built-in one:
@@ -185,11 +185,11 @@ name = "idcat"
 A plugin module implements the same interface as a built-in block:
 
 ```python
-from manifest_builder.handlers import ConfigHandler, GenerationContext
+from manifest_builder.blocks import ConfigBlock, GenerationContext
 from manifest_builder.output import write_documents
 
 
-class PublicRepoConfigHandler(ConfigHandler[PublicRepoConfig]):
+class PublicRepoBlock(ConfigBlock[PublicRepoConfig]):
     def top_level_config_name(self) -> str:
         return "public-repo"
 
@@ -205,8 +205,8 @@ Notes:
   onto `sys.path`, so a plugin named `json.py` cannot shadow an installed
   module. Sibling modules are reachable with a relative import
   (`from .helpers import ...`).
-- Handlers are registered in a stable order, sorted by their top-level key, so
-  a run does not depend on filesystem order. Two handlers claiming the same key
+- Blocks are registered in a stable order, sorted by their top-level key, so
+  a run does not depend on filesystem order. Two blocks claiming the same key
   is an error.
 - Bundled templates should be resolved relative to the plugin module, for
   example `Path(__file__).parent / "templates" / "public_repo"`.

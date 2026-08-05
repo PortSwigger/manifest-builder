@@ -10,9 +10,10 @@ from typing import Any
 
 import pytest
 
-from manifest_builder.blocks.copy import CopyConfig, CopyConfigHandler
-from manifest_builder.blocks.helm import ChartConfig, HelmConfigHandler
-from manifest_builder.blocks.simple import SimpleConfig, SimpleConfigHandler
+from manifest_builder.blocks import ConfigBlock
+from manifest_builder.blocks.copy import CopyBlock, CopyConfig
+from manifest_builder.blocks.helm import ChartConfig, HelmBlock
+from manifest_builder.blocks.simple import SimpleBlock, SimpleConfig
 from manifest_builder.config import (
     ManifestConfig,
     load_configs,
@@ -21,8 +22,7 @@ from manifest_builder.config import (
     load_owned_namespaces,
     resolve_configs,
 )
-from manifest_builder.discovery import discover_handlers
-from manifest_builder.handlers import ConfigHandler
+from manifest_builder.discovery import discover_blocks
 from manifest_builder.helmfile import Helmfile, HelmfileRelease, HelmfileRepository
 
 
@@ -33,27 +33,27 @@ def write_toml(directory: Path, name: str, content: str) -> Path:
 
 
 def all_configs(
-    handlers: Sequence[ConfigHandler],
+    blocks: Sequence[ConfigBlock],
 ) -> tuple[ManifestConfig, ...]:
-    return tuple(config for handler in handlers for config in handler.iter_configs())
+    return tuple(config for block in blocks for config in block.iter_configs())
 
 
 def only_config(
-    handlers: Sequence[ConfigHandler],
+    blocks: Sequence[ConfigBlock],
 ) -> ManifestConfig:
-    (config,) = all_configs(handlers)
+    (config,) = all_configs(blocks)
     return config
 
 
-def config_handlers() -> list[ConfigHandler[Any]]:
-    """The built-in handlers, found the same way a real run finds them."""
-    return discover_handlers()
+def config_blocks() -> list[ConfigBlock[Any]]:
+    """The built-in blocks, found the same way a real run finds them."""
+    return discover_blocks()
 
 
 def load_test_configs(
     config_dir: Path,
-) -> Sequence[ConfigHandler]:
-    return load_configs(config_dir, config_handlers())
+) -> Sequence[ConfigBlock]:
+    return load_configs(config_dir, config_blocks())
 
 
 def manifest_configs(
@@ -61,11 +61,11 @@ def manifest_configs(
     helm: list[ChartConfig] | None = None,
     simples: list[SimpleConfig] | None = None,
     copies: list[CopyConfig] | None = None,
-) -> list[HelmConfigHandler | SimpleConfigHandler | CopyConfigHandler]:
+) -> list[HelmBlock | SimpleBlock | CopyBlock]:
     return [
-        HelmConfigHandler(helm),
-        SimpleConfigHandler(simples),
-        CopyConfigHandler(copies),
+        HelmBlock(helm),
+        SimpleBlock(simples),
+        CopyBlock(copies),
     ]
 
 
@@ -397,7 +397,7 @@ def test_extra_variables_are_merged_into_helm_configs(tmp_path: Path) -> None:
 
     configs = load_configs(
         conf_dir,
-        config_handlers(),
+        config_blocks(),
         extra_variables={"cluster_name": "prod", "replica_count": 3},
     )
     config = only_config(configs)
@@ -426,7 +426,7 @@ def test_extra_variables_without_config_variables(tmp_path: Path) -> None:
 
     configs = load_configs(
         conf_dir,
-        config_handlers(),
+        config_blocks(),
         extra_variables={"cluster_name": "prod"},
     )
     config = only_config(configs)
@@ -455,7 +455,7 @@ def test_extra_variables_conflict_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="'domain'"):
         load_configs(
             conf_dir,
-            config_handlers(),
+            config_blocks(),
             extra_variables={"domain": "other.com"},
         )
 
@@ -547,7 +547,7 @@ def test_validate_config_missing_values_file(tmp_path: Path) -> None:
         release=None,
     )
     with pytest.raises(ValueError, match="Values file not found"):
-        HelmConfigHandler().validate(config, tmp_path)
+        HelmBlock().validate(config, tmp_path)
 
 
 def test_validate_config_existing_values_file(tmp_path: Path) -> None:
@@ -563,7 +563,7 @@ def test_validate_config_existing_values_file(tmp_path: Path) -> None:
         values=[values_file],
         release="myapp",
     )
-    HelmConfigHandler().validate(config, tmp_path)  # should not raise
+    HelmBlock().validate(config, tmp_path)  # should not raise
 
 
 def test_validate_config_missing_local_chart(tmp_path: Path) -> None:
@@ -577,7 +577,7 @@ def test_validate_config_missing_local_chart(tmp_path: Path) -> None:
         release=None,
     )
     with pytest.raises(ValueError, match="Local chart path not found"):
-        HelmConfigHandler().validate(config, tmp_path)
+        HelmBlock().validate(config, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -692,8 +692,8 @@ def test_load_configs_no_recognized_tables(tmp_path: Path) -> None:
         load_test_configs(conf)
 
 
-def test_load_configs_no_registered_handler_tables(tmp_path: Path) -> None:
-    """Config loading fails when none of the registered handler lists is present."""
+def test_load_configs_no_registered_block_tables(tmp_path: Path) -> None:
+    """Config loading fails when none of the registered block lists is present."""
     conf = tmp_path / "conf"
     conf.mkdir()
     write_toml(
@@ -710,11 +710,11 @@ def test_load_configs_no_registered_handler_tables(tmp_path: Path) -> None:
         ValueError,
         match="Unknown top-level field: 'helm' on line 1",
     ):
-        load_configs(conf, [CopyConfigHandler()])
+        load_configs(conf, [CopyBlock()])
 
 
-def test_load_configs_without_handlers_raises(tmp_path: Path) -> None:
-    """Config loading needs at least one handler to define known config lists."""
+def test_load_configs_without_blocks_raises(tmp_path: Path) -> None:
+    """Config loading needs at least one block to define known config lists."""
     conf = tmp_path / "conf"
     conf.mkdir()
     write_toml(
@@ -727,7 +727,7 @@ def test_load_configs_without_handlers_raises(tmp_path: Path) -> None:
         name = "myapp"
         """,
     )
-    with pytest.raises(ValueError, match="No config handlers registered"):
+    with pytest.raises(ValueError, match="No config blocks registered"):
         load_configs(conf, [])
 
 
@@ -772,7 +772,7 @@ def test_load_simple_config_uses_default_namespace(tmp_path: Path) -> None:
         """,
     )
 
-    configs = load_configs(conf, config_handlers(), default_namespace="idcat")
+    configs = load_configs(conf, config_blocks(), default_namespace="idcat")
     config = only_config(configs)
     assert isinstance(config, SimpleConfig)
     assert config.name == "idcat"
@@ -793,7 +793,7 @@ def test_load_simple_config_uses_default_image(tmp_path: Path) -> None:
 
     configs = load_configs(
         conf,
-        config_handlers(),
+        config_blocks(),
         default_namespace="idcat",
         default_image="example.com/idcat:1.0",
     )
@@ -819,7 +819,7 @@ def test_load_simple_config_rejects_image_with_default_image(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="Cannot specify 'image'.*generate"):
         load_configs(
             conf,
-            config_handlers(),
+            config_blocks(),
             default_namespace="idcat",
             default_image="example.com/override:1.0",
         )
@@ -1597,7 +1597,7 @@ def test_validate_config_chart_extra_resources_missing_directory(
         extra_resources=tmp_path / "nonexistent",
     )
     with pytest.raises(ValueError, match="Extra resources directory not found"):
-        HelmConfigHandler().validate(config, tmp_path)
+        HelmBlock().validate(config, tmp_path)
 
 
 def test_validate_config_chart_config_missing_file(tmp_path: Path) -> None:
@@ -1613,7 +1613,7 @@ def test_validate_config_chart_config_missing_file(tmp_path: Path) -> None:
         config={"app.conf": tmp_path / "missing.conf"},
     )
     with pytest.raises(ValueError, match="Config file not found for chart"):
-        HelmConfigHandler().validate(config, tmp_path)
+        HelmBlock().validate(config, tmp_path)
 
 
 def test_validate_config_chart_extra_resources_not_a_directory(tmp_path: Path) -> None:
@@ -1632,7 +1632,7 @@ def test_validate_config_chart_extra_resources_not_a_directory(tmp_path: Path) -
         extra_resources=not_a_dir,
     )
     with pytest.raises(ValueError, match="Extra resources path is not a directory"):
-        HelmConfigHandler().validate(config, tmp_path)
+        HelmBlock().validate(config, tmp_path)
 
 
 def test_validate_config_simple_extra_resources_missing_directory(
@@ -1646,7 +1646,7 @@ def test_validate_config_simple_extra_resources_missing_directory(
         extra_resources=tmp_path / "nonexistent",
     )
     with pytest.raises(ValueError, match="Extra resources directory not found"):
-        SimpleConfigHandler().validate(config, tmp_path)
+        SimpleBlock().validate(config, tmp_path)
 
 
 def test_validate_config_simple_extra_resources_not_a_directory(tmp_path: Path) -> None:
@@ -1661,7 +1661,7 @@ def test_validate_config_simple_extra_resources_not_a_directory(tmp_path: Path) 
         extra_resources=not_a_dir,
     )
     with pytest.raises(ValueError, match="Extra resources path is not a directory"):
-        SimpleConfigHandler().validate(config, tmp_path)
+        SimpleBlock().validate(config, tmp_path)
 
 
 def test_load_chart_config_with_init(tmp_path: Path) -> None:
@@ -1706,7 +1706,7 @@ def test_validate_config_chart_init_missing_file(tmp_path: Path) -> None:
         init=tmp_path / "nonexistent.sh",
     )
     with pytest.raises(ValueError, match="init script not found"):
-        HelmConfigHandler().validate(config, tmp_path)
+        HelmBlock().validate(config, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1924,7 +1924,7 @@ def test_validate_copy_config_missing_source_dir(tmp_path: Path) -> None:
         source=tmp_path / "nonexistent",
     )
     with pytest.raises(ValueError, match="source directory not found"):
-        CopyConfigHandler().validate(config, tmp_path)
+        CopyBlock().validate(config, tmp_path)
 
 
 def test_validate_copy_config_source_not_a_directory(tmp_path: Path) -> None:
@@ -1937,7 +1937,7 @@ def test_validate_copy_config_source_not_a_directory(tmp_path: Path) -> None:
         source=not_a_dir,
     )
     with pytest.raises(ValueError, match="source path is not a directory"):
-        CopyConfigHandler().validate(config, tmp_path)
+        CopyBlock().validate(config, tmp_path)
 
 
 def test_validate_copy_config_missing_config_file(tmp_path: Path) -> None:
@@ -1951,7 +1951,7 @@ def test_validate_copy_config_missing_config_file(tmp_path: Path) -> None:
         config={"/config/app.cfg": tmp_path / "nonexistent.cfg"},
     )
     with pytest.raises(ValueError, match="Config file not found"):
-        CopyConfigHandler().validate(config, tmp_path)
+        CopyBlock().validate(config, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2145,8 +2145,8 @@ def write_section(conf: Path, section: str, content: str) -> Path:
     return write_toml(section_dir, "section.toml", content)
 
 
-def load_target_configs(conf: Path, target: str) -> Sequence[ConfigHandler]:
-    return load_configs(conf, config_handlers(), target=target)
+def load_target_configs(conf: Path, target: str) -> Sequence[ConfigBlock]:
+    return load_configs(conf, config_blocks(), target=target)
 
 
 def dev_and_prod_config(conf: Path) -> None:
@@ -2575,7 +2575,7 @@ def test_extra_variables_merge_with_target_vars(tmp_path: Path) -> None:
 
     configs = load_configs(
         conf,
-        config_handlers(),
+        config_blocks(),
         extra_variables={"build_id": 42},
         target="dev",
     )
@@ -2615,7 +2615,7 @@ def test_extra_variable_conflicting_with_target_var_raises(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="'cluster_name' defined in both"):
         load_configs(
             conf,
-            config_handlers(),
+            config_blocks(),
             extra_variables={"cluster_name": "other"},
             target="dev",
         )
@@ -2632,7 +2632,7 @@ def test_target_must_be_selected(tmp_path: Path) -> None:
         match="declares targets, so one must be selected. "
         "Available targets: 'platform-dev', 'platform-prod'",
     ):
-        load_configs(conf, config_handlers())
+        load_configs(conf, config_blocks())
 
 
 def test_unknown_target_lists_the_available_ones(tmp_path: Path) -> None:

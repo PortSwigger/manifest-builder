@@ -18,7 +18,7 @@ from manifest_builder.config import (
     load_toml_file,
     resolve_configs,
 )
-from manifest_builder.discovery import discover_handlers
+from manifest_builder.discovery import discover_blocks
 from manifest_builder.generator import generate_manifests, plural
 from manifest_builder.git_utils import (
     GitManifestChanges,
@@ -73,7 +73,7 @@ def generate(
             ``output/owners/<namespace>.toml``, and cluster-scoped output is
             rejected.
         image: Optional image override for namespace-owner mode. When set,
-            config handlers that support image overrides use this image and may
+            config blocks that support image overrides use this image and may
             reject an ``image`` field in the config file.
         vars: Optional extra template variables, merged into the ``[variables]``
             table from config.toml the same way as variables loaded with
@@ -118,26 +118,26 @@ def generate(
         count = len(helmfile_data.releases)
         logger.info("Loaded releases.yaml: %d release%s", count, plural(count))
 
-    handlers = discover_handlers(config)
+    blocks = discover_blocks(config)
     if verbose:
         logger.info(
-            "Discovered %d config handler%s: %s",
-            len(handlers),
-            plural(len(handlers)),
-            ", ".join(handler.top_level_config_name() for handler in handlers),
+            "Discovered %d config block%s: %s",
+            len(blocks),
+            plural(len(blocks)),
+            ", ".join(block.top_level_config_name() for block in blocks),
         )
-    handlers = load_configs(
+    blocks = load_configs(
         config,
-        handlers,
+        blocks,
         extra_variables=extra_variables,
         default_namespace=namespace,
         default_image=image if namespace is not None else None,
         target=target,
     )
-    handlers = resolve_configs(handlers, helmfile_data)
+    blocks = resolve_configs(blocks, helmfile_data)
 
     if verbose:
-        count = sum(1 for handler in handlers for _ in handler.iter_configs())
+        count = sum(1 for block in blocks for _ in block.iter_configs())
         logger.info("Loaded %d app configuration%s", count, plural(count))
 
     images = load_images(config)
@@ -162,7 +162,7 @@ def generate(
         )
 
     written_paths = generate_manifests(
-        handlers=handlers,
+        blocks=blocks,
         output_dir=output,
         repo_root=repo_root,
         images=images,
