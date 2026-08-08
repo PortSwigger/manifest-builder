@@ -11,6 +11,7 @@ from yaml.scanner import ScannerError
 
 from manifest_builder import __version__
 from manifest_builder.api import generate
+from manifest_builder.discovery import ExternalPlugins
 from manifest_builder.generator import ManifestError, setup_logging
 from manifest_builder.helm import get_helm_version
 
@@ -29,6 +30,13 @@ def _format_scanner_error(error: ScannerError, config_dir: Path) -> str:
     except ValueError:
         mark.name = str(yaml_path)
     return " ".join(str(error).split())
+
+
+def _extra_plugins(extra_plugins: Path | None) -> ExternalPlugins | None:
+    """Describe a --extra-plugins directory for generation."""
+    if extra_plugins is None:
+        return None
+    return ExternalPlugins(path=extra_plugins, source="provided on command line")
 
 
 def _format_manifest_error(error: ManifestError, output_dir: Path) -> str:
@@ -97,6 +105,14 @@ def _format_manifest_error(error: ManifestError, output_dir: Path) -> str:
     metavar="TARGET",
     help="Target to generate, for a config directory that declares targets",
 )
+@click.option(
+    "--extra-plugins",
+    type=click.Path(exists=False, path_type=Path),
+    default=None,
+    metavar="DIRECTORY",
+    help="Further plugins directory to load config blocks from, "
+    "for config that does not carry its own plugins",
+)
 def main(
     config_dir: Path,
     output_dir: Path,
@@ -106,6 +122,7 @@ def main(
     vars_from: Path | None,
     namespace: str | None,
     target: str | None,
+    extra_plugins: Path | None,
 ) -> None:
     """Generate Kubernetes manifests from configuration input."""
     setup_logging(verbose=verbose)
@@ -123,6 +140,7 @@ def main(
             vars_from=vars_from,
             namespace=namespace,
             target=target,
+            plugins=_extra_plugins(extra_plugins),
         )
 
     except ManifestError as e:
