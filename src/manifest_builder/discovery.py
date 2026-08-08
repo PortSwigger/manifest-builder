@@ -5,6 +5,8 @@
 Built-in blocks are discovered by walking :mod:`manifest_builder.blocks`.
 A config directory may supply more of its own in a ``plugins`` subdirectory,
 letting a config repository add a config block without changing this package.
+A caller whose config comes from a repository that does not carry the plugins
+needed to parse it can point generation at a second plugins directory as well.
 """
 
 import importlib
@@ -14,6 +16,7 @@ import logging
 import pkgutil
 import sys
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from types import ModuleType
@@ -40,25 +43,46 @@ PLUGINS_DIR_NAME = "plugins"
 PLUGINS_PACKAGE = "manifest_builder_plugins"
 
 
-def discover_blocks(config_dir: Path | None = None) -> list[ConfigBlock[Any]]:
+@dataclass(frozen=True)
+class ExternalPlugins:
+    """Plugins to load from outside the config directory.
+
+    Args:
+        path: A plugins directory, used in addition to the config directory's
+            own ``plugins`` subdirectory.
+        source: Where those plugins came from, recorded as a ``Plugins from:``
+            line in a generated commit.
+    """
+
+    path: Path
+    source: str
+
+
+def discover_blocks(
+    config_dir: Path | None = None,
+    external_plugins: Path | None = None,
+) -> list[ConfigBlock[Any]]:
     """Return one instance of every available config block.
 
     Args:
         config_dir: Config directory to scan for a ``plugins`` subdirectory.
             When None, only built-in blocks are returned.
+        external_plugins: A further plugins directory, for config that comes
+            from a repository not holding the plugins needed to parse it.
 
     Returns:
         Block instances ordered by the top-level TOML key they own, so a run
         is reproducible regardless of filesystem or import order.
 
     Raises:
-        ValueError: If two blocks claim the same top-level key.
+        ValueError: If two blocks claim the same top-level key, or the two
+            plugins directories offer the same module name.
     """
     classes = list(_builtin_block_classes())
     plugin_classes: list[type[ConfigBlock[Any]]] = []
     plugin_count = 0
-    if config_dir is not None:
-        plugin_count, plugin_classes = _load_plugins(config_dir)
+    if config_dir is not None or external_plugins is not None:
+        plugin_count, plugin_classes = _load_plugins(config_dir, external_plugins)
         classes.extend(plugin_classes)
 
     blocks: dict[str, ConfigBlock[Any]] = {}
@@ -110,23 +134,30 @@ def _builtin_block_classes() -> Iterator[type[ConfigBlock[Any]]]:
 
 
 def _load_plugins(
-    config_dir: Path,
+    config_dir: Path | None,
+    external_plugins: Path | None = None,
 ) -> tuple[int, list[type[ConfigBlock[Any]]]]:
-    """Import plugin modules under ``<config_dir>/plugins``.
+    """Import plugin modules from ``<config_dir>/plugins`` and ``external_plugins``.
 
     Returns:
         The number of plugin modules that contributed at least one block,
         and the block classes they define.
     """
-    plugins_dir = config_dir / PLUGINS_DIR_NAME
-    if not plugins_dir.is_dir():
+    plugins_dirs: list[Path] = []
+    if config_dir is not None and (config_dir / PLUGINS_DIR_NAME).is_dir():
+        plugins_dirs.append(config_dir / PLUGINS_DIR_NAME)
+    if external_plugins is not None:
+        if not external_plugins.is_dir():
+            raise ValueError(f"Plugins directory does not exist: {external_plugins}")
+        plugins_dirs.append(external_plugins)
+    if not plugins_dirs:
         return 0, []
 
     classes: list[type[ConfigBlock[Any]]] = []
     contributing = 0
 
     with _PLUGIN_LOAD_LOCK:
-        _register_plugins_package(plugins_dir)
+        _register_plugins_package(plugins_dirs)
 
         # Writing no bytecode keeps __pycache__ out of the config checkout, and
         # removes the one way a re-import could still see stale code: .pyc
@@ -135,7 +166,7 @@ def _load_plugins(
         write_bytecode = not sys.dont_write_bytecode
         sys.dont_write_bytecode = True
         try:
-            for name in _plugin_module_names(plugins_dir):
+            for name, plugins_dir in _plugin_modules(plugins_dirs):
                 qualified = f"{PLUGINS_PACKAGE}.{name}"
                 try:
                     module = importlib.import_module(qualified)
@@ -166,6 +197,26 @@ def _is_test_module(name: str) -> bool:
         or name.startswith("test_")
         or name.endswith("_test")
     )
+
+
+def _plugin_modules(plugins_dirs: list[Path]) -> list[tuple[str, Path]]:
+    """Return importable module names and their directory, in a stable order.
+
+    Raises:
+        ValueError: If two plugins directories offer the same module name, as
+            one would then silently shadow the other.
+    """
+    found: dict[str, Path] = {}
+    for plugins_dir in plugins_dirs:
+        for name in _plugin_module_names(plugins_dir):
+            existing = found.get(name)
+            if existing is not None:
+                raise ValueError(
+                    f"Plugin module '{name}' is present in both {existing} "
+                    f"and {plugins_dir}"
+                )
+            found[name] = plugins_dir
+    return sorted(found.items())
 
 
 def _plugin_module_names(plugins_dir: Path) -> list[str]:
@@ -199,8 +250,8 @@ def forget_plugin_modules() -> None:
         del sys.modules[name]
 
 
-def _register_plugins_package(plugins_dir: Path) -> None:
-    """Install a fresh synthetic parent package rooted at ``plugins_dir``.
+def _register_plugins_package(plugins_dirs: list[Path]) -> None:
+    """Install a fresh synthetic parent package rooted at ``plugins_dirs``.
 
     Previously imported plugin modules are always discarded rather than reused.
     A long-running process may generate from a config directory that has been
@@ -219,7 +270,7 @@ def _register_plugins_package(plugins_dir: Path) -> None:
     )
     assert spec is not None
     package = importlib.util.module_from_spec(spec)
-    package.__path__ = [str(plugins_dir.resolve())]
+    package.__path__ = [str(path.resolve()) for path in plugins_dirs]
     sys.modules[PLUGINS_PACKAGE] = package
 
 

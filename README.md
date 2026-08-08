@@ -222,6 +222,31 @@ Notes:
 Plugin modules are imported from the configuration directory, so that directory
 is trusted to the same degree as the manifest-builder installation itself.
 
+### Plugins from outside the configuration directory
+
+Configuration is sometimes read from a repository that does not carry the
+plugins needed to parse it. `generate()` then takes a second plugins directory,
+used in addition to `conf/plugins`:
+
+```python
+from manifest_builder import ExternalPlugins, generate
+
+generate(
+    Path("conf"),
+    Path("output"),
+    plugins=ExternalPlugins(
+        path=Path("plugins-checkout/plugins"),
+        source="https://example.com/plugins.git@def456",
+    ),
+)
+```
+
+`path` is the plugins directory itself, resolved relative to `repo_root` if it
+is not absolute, and must exist. `source` records where those plugins came
+from, and is written as a `Plugins from:` line in a commit created with
+`create_commit=True`. A module name offered by both directories is an error
+rather than one silently shadowing the other.
+
 ### Plugins in a long-running process
 
 A process that calls `generate()` repeatedly may be pointed at a configuration

@@ -300,6 +300,7 @@ def create_manifest_commit(
     config_subject: str,
     generated_files: set[Path],
     stage_paths: set[Path] | None = None,
+    plugins_source: str | None = None,
 ) -> None:
     """
     Create a git commit in the output directory.
@@ -315,6 +316,8 @@ def create_manifest_commit(
         generated_files: Set of file paths that were generated in this run
         stage_paths: Paths under ``output_dir`` to stage. If omitted, the full
             output checkout is staged.
+        plugins_source: Where plugins loaded from outside the config directory
+            came from, recorded as a ``Plugins from:`` line.
 
     Raises:
         RuntimeError: If git operations fail
@@ -344,11 +347,17 @@ def create_manifest_commit(
                 if output_relative != Path(".")
                 else ""
             )
+            plugins_line = (
+                f"Plugins from: {plugins_source}\n"
+                if plugins_source is not None
+                else ""
+            )
             commit_message = (
                 f"Generated from: {config_subject}\n"
                 f"\n"
                 f"Config remote: {config_remote}\n"
                 f"Config commit: {config_commit}\n"
+                f"{plugins_line}"
                 f"{output_line}"
                 f"Tool version: {version}"
             )

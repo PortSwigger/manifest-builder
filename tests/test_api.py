@@ -3,6 +3,7 @@
 """Tests for the reusable manifest-builder API."""
 
 from pathlib import Path
+from typing import cast
 from unittest import mock
 from unittest.mock import call
 
@@ -10,8 +11,10 @@ import pytest
 import yaml
 from conftest import init_test_repo
 from dulwich import porcelain
+from dulwich.objects import Commit
+from dulwich.repo import Repo
 
-from manifest_builder import GenerationResult, __version__, generate
+from manifest_builder import ExternalPlugins, GenerationResult, __version__, generate
 from manifest_builder.api import (
     DEPLOY_ID_ANNOTATION,
     _collect_generation_result,
@@ -763,6 +766,76 @@ metadata:
     assert status.staged == {"add": [], "delete": [], "modify": []}
 
 
+def test_generate_with_plugins_from_outside_the_config_repo(tmp_path: Path) -> None:
+    """Config that does not carry its own plugins can be given them separately."""
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    plugins = tmp_path / "plugins-checkout" / "plugins"
+    config.mkdir()
+    output.mkdir()
+    config_repo = init_test_repo(config)
+    config_file = config_repo.get_config()
+    config_file.set((b"remote", b"origin"), b"url", b"https://example.com/config.git")
+    config_file.write_to_path()
+    config_repo.close()
+    (config / "config.toml").write_text(
+        """\
+[[demo]]
+namespace = "team-a"
+image = "registry.example.com/team-a:1.0"
+"""
+    )
+    _commit_all(config)
+
+    plugins.mkdir(parents=True)
+    (plugins / "demo.py").write_text(DEMO_PLUGIN)
+    init_test_repo(output)
+    _commit_all(output)
+
+    result = api_generate(
+        config,
+        output,
+        repo_root=tmp_path,
+        create_commit=True,
+        plugins=ExternalPlugins(
+            path=plugins, source="https://example.com/plugins.git@def456"
+        ),
+    )
+
+    assert output / "team-a" / "deployment-team-a.yaml" in result.written_paths
+    with Repo.discover(output) as repo:
+        message = cast(Commit, repo[repo.head()]).message
+    assert b"Plugins from: https://example.com/plugins.git@def456\n" in message
+
+
+def test_generate_resolves_a_relative_plugins_path_against_repo_root(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    (config / "config.toml").write_text(
+        """\
+[[demo]]
+namespace = "team-a"
+image = "registry.example.com/team-a:1.0"
+"""
+    )
+    plugins = tmp_path / "elsewhere" / "plugins"
+    plugins.mkdir(parents=True)
+    (plugins / "demo.py").write_text(DEMO_PLUGIN)
+
+    result = api_generate(
+        config,
+        output,
+        repo_root=tmp_path,
+        plugins=ExternalPlugins(path=Path("elsewhere/plugins"), source="test"),
+    )
+
+    assert output / "team-a" / "deployment-team-a.yaml" in result.written_paths
+
+
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -957,6 +1030,7 @@ def test_top_level_generate_delegates_to_api(mock_generate: mock.Mock) -> None:
         image=None,
         vars=None,
         target=None,
+        plugins=None,
     )
 
 
@@ -987,6 +1061,7 @@ def test_top_level_generate_passes_namespace_image(mock_generate: mock.Mock) -> 
         image="registry.example.com/app:1.0",
         vars=None,
         target=None,
+        plugins=None,
     )
 
 
@@ -1017,6 +1092,7 @@ def test_top_level_generate_passes_vars(mock_generate: mock.Mock) -> None:
         image=None,
         vars={"domain": "example.com"},
         target=None,
+        plugins=None,
     )
 
 
@@ -1046,6 +1122,7 @@ def test_top_level_generate_passes_target(mock_generate: mock.Mock) -> None:
         image=None,
         vars=None,
         target="dev",
+        plugins=None,
     )
 
 

@@ -158,6 +158,71 @@ def test_plugin_can_import_a_sibling_module(tmp_path: Path) -> None:
     assert "greeting" in blocks
 
 
+def test_discovers_a_plugin_from_an_external_directory(tmp_path: Path) -> None:
+    """Config from a repo without its plugins can be given them separately."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    external = tmp_path / "elsewhere" / "plugins"
+    external.mkdir(parents=True)
+    (external / "greeting.py").write_text(textwrap.dedent(GREETING_PLUGIN))
+
+    keys = [h.top_level_config_name() for h in discover_blocks(config_dir, external)]
+
+    assert keys == sorted([*BUILTIN_KEYS, "greeting"])
+
+
+def test_external_plugins_are_added_to_the_config_dir_plugins(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    _write_plugin(config_dir, "greeting", GREETING_PLUGIN)
+    external = tmp_path / "elsewhere" / "plugins"
+    external.mkdir(parents=True)
+    (external / "farewell.py").write_text(
+        textwrap.dedent(
+            GREETING_PLUGIN.replace("greeting", "farewell").replace(
+                "Greeting", "Farewell"
+            )
+        )
+    )
+
+    keys = [h.top_level_config_name() for h in discover_blocks(config_dir, external)]
+
+    assert keys == sorted([*BUILTIN_KEYS, "greeting", "farewell"])
+
+
+def test_the_same_plugin_module_name_in_both_directories_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """One directory silently shadowing the other would be hard to spot."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    _write_plugin(config_dir, "greeting", GREETING_PLUGIN)
+    external = tmp_path / "elsewhere" / "plugins"
+    external.mkdir(parents=True)
+    (external / "greeting.py").write_text(textwrap.dedent(GREETING_PLUGIN))
+
+    with pytest.raises(ValueError, match="Plugin module 'greeting' is present in both"):
+        discover_blocks(config_dir, external)
+
+
+def test_a_missing_external_plugins_directory_is_an_error(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+
+    with pytest.raises(ValueError, match="Plugins directory does not exist"):
+        discover_blocks(config_dir, tmp_path / "nowhere")
+
+
+def test_external_plugins_without_a_config_dir(tmp_path: Path) -> None:
+    external = tmp_path / "plugins"
+    external.mkdir()
+    (external / "greeting.py").write_text(textwrap.dedent(GREETING_PLUGIN))
+
+    keys = [h.top_level_config_name() for h in discover_blocks(None, external)]
+
+    assert keys == sorted([*BUILTIN_KEYS, "greeting"])
+
+
 def test_underscored_and_hidden_files_are_skipped(tmp_path: Path) -> None:
     _write_plugin(tmp_path, "_helpers", "raise AssertionError('must not import')\n")
     (tmp_path / "plugins" / "notes.txt").write_text("not python\n")
