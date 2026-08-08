@@ -247,6 +247,13 @@ from, and is written as a `Plugins from:` line in a commit created with
 `create_commit=True`. A module name offered by both directories is an error
 rather than one silently shadowing the other.
 
+On the command line the same directory is given with `--extra-plugins`, and its
+source is recorded as `provided on command line`:
+
+```console
+manifest-builder --config-dir conf --extra-plugins plugins-checkout/plugins
+```
+
 ### Plugins in a long-running process
 
 A process that calls `generate()` repeatedly may be pointed at a configuration

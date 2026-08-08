@@ -8,6 +8,7 @@ from unittest import mock
 from click.testing import CliRunner
 
 from manifest_builder.cli import main
+from manifest_builder.discovery import ExternalPlugins
 from manifest_builder.generator import ManifestError
 
 
@@ -34,6 +35,7 @@ def test_main_delegates_to_generate(
         vars_from=None,
         namespace=None,
         target=None,
+        plugins=None,
     )
 
 
@@ -57,6 +59,7 @@ def test_main_passes_vars_from(
         vars_from=Path("extra.toml"),
         namespace=None,
         target=None,
+        plugins=None,
     )
 
 
@@ -80,6 +83,7 @@ def test_main_passes_namespace(
         vars_from=None,
         namespace="team-a",
         target=None,
+        plugins=None,
     )
 
 
@@ -103,6 +107,33 @@ def test_main_passes_target(
         vars_from=None,
         namespace=None,
         target="platform-dev",
+        plugins=None,
+    )
+
+
+@mock.patch("manifest_builder.cli.generate")
+@mock.patch("manifest_builder.cli.get_helm_version", return_value="v3.0.0")
+def test_main_passes_extra_plugins(
+    mock_get_helm_version: mock.Mock,
+    mock_generate: mock.Mock,
+) -> None:
+    """The --extra-plugins directory is forwarded, sourced to the command line."""
+    result = CliRunner().invoke(main, ["--extra-plugins", "elsewhere/plugins"])
+
+    assert result.exit_code == 0
+    mock_get_helm_version.assert_called_once_with()
+    mock_generate.assert_called_once_with(
+        Path("conf"),
+        Path("output"),
+        verbose=False,
+        create_commit=False,
+        allow_dirty_config=False,
+        vars_from=None,
+        namespace=None,
+        target=None,
+        plugins=ExternalPlugins(
+            path=Path("elsewhere/plugins"), source="provided on command line"
+        ),
     )
 
 
