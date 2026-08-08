@@ -20,6 +20,11 @@ except ModuleNotFoundError:
         __version__ = "0.0.0"
 
 
+def get_version() -> str:
+    """Return the version of the running manifest-builder."""
+    return __version__
+
+
 def generate(
     config: Path,
     output: Path,
@@ -67,4 +72,5 @@ __all__ = [
     "KubernetesObjectRef",
     "__version__",
     "generate",
+    "get_version",
 ]

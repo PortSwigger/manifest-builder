@@ -46,6 +46,15 @@ with the `[variables]` table in `config.toml` just like values loaded with
 generate(Path("conf"), Path("output"), vars={"domain": "example.com"})
 ```
 
+`manifest_builder.get_version()` returns the version string of the running
+manifest-builder, for calling code that wants to log which version it used:
+
+```python
+from manifest_builder import get_version
+
+logger.info(f"Using manifest-builder {get_version()}")
+```
+
 ## Targets and sections
 
 A configuration directory comes in one of two layouts, told apart by the

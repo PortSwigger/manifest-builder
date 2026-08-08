@@ -14,7 +14,13 @@ from dulwich import porcelain
 from dulwich.objects import Commit
 from dulwich.repo import Repo
 
-from manifest_builder import ExternalPlugins, GenerationResult, __version__, generate
+from manifest_builder import (
+    ExternalPlugins,
+    GenerationResult,
+    __version__,
+    generate,
+    get_version,
+)
 from manifest_builder.api import (
     DEPLOY_ID_ANNOTATION,
     _collect_generation_result,
@@ -116,6 +122,12 @@ def write_demo_plugin(config_dir: Path) -> None:
 def test_generate_is_available_from_top_level_package() -> None:
     """Call sites can import generate directly from manifest_builder."""
     assert generate.__name__ == "generate"
+
+
+def test_get_version_returns_the_package_version() -> None:
+    """Call sites can ask which manifest-builder version they are running."""
+    assert get_version() == __version__
+    assert isinstance(get_version(), str)
 
 
 def _commit_all(path: Path, message: bytes = b"commit") -> bytes:
