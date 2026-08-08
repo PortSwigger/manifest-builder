@@ -167,6 +167,35 @@ def test_create_manifest_commit_stages_full_output_by_default(
     assert f"Created manifest commit in {tmp_path}" in caplog.messages
 
 
+def test_create_manifest_commit_records_the_plugin_source(tmp_path: Path) -> None:
+    """Plugins loaded from elsewhere are named in the commit message."""
+    init_test_repo(tmp_path)
+    manifest = tmp_path / "surreal3" / "namespace-surreal3.yaml"
+    manifest.parent.mkdir()
+    manifest.write_text("apiVersion: v1\nkind: Namespace\n")
+
+    create_manifest_commit(
+        output_dir=tmp_path,
+        version="1.2.3",
+        config_remote="https://example.com/config.git",
+        config_commit="abc123",
+        config_subject="Update production config",
+        generated_files={manifest},
+        plugins_source="https://example.com/plugins.git@def456",
+    )
+
+    with Repo.discover(tmp_path) as repo:
+        commit = cast(Commit, repo[repo.head()])
+    assert commit.message == (
+        b"Generated from: Update production config\n"
+        b"\n"
+        b"Config remote: https://example.com/config.git\n"
+        b"Config commit: abc123\n"
+        b"Plugins from: https://example.com/plugins.git@def456\n"
+        b"Tool version: 1.2.3"
+    )
+
+
 def test_create_manifest_commit_uses_parent_checkout_for_nested_output(
     tmp_path: Path,
 ) -> None:

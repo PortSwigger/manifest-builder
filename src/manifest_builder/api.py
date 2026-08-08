@@ -18,7 +18,7 @@ from manifest_builder.config import (
     load_toml_file,
     resolve_configs,
 )
-from manifest_builder.discovery import discover_blocks
+from manifest_builder.discovery import ExternalPlugins, discover_blocks
 from manifest_builder.generator import generate_manifests, plural
 from manifest_builder.git_utils import (
     GitManifestChanges,
@@ -51,6 +51,7 @@ def generate(
     image: str | None = None,
     vars: Mapping[str, TemplateValue] | None = None,
     target: str | None = None,
+    plugins: ExternalPlugins | None = None,
 ) -> GenerationResult:
     """Generate manifests from ``config`` into ``output``.
 
@@ -81,6 +82,11 @@ def generate(
         target: Name of the target to generate, for a ``version = 2`` config
             directory. Required for those, and rejected for a config directory
             that declares config blocks directly.
+        plugins: Optional plugins directory to load config blocks from in
+            addition to ``config/plugins``, for config that comes from a
+            repository not holding the plugins needed to parse it. Its ``path``
+            is resolved relative to ``repo_root`` if it is not absolute, and its
+            ``source`` becomes a ``Plugins from:`` line in a created commit.
 
     Returns:
         Summary of written paths and object-level changes.
@@ -90,6 +96,7 @@ def generate(
 
     config = repo_root / config
     output = repo_root / output
+    plugins_dir = repo_root / plugins.path if plugins is not None else None
     extra_variables = _load_api_variables(repo_root, vars_from, vars)
 
     if image is not None and namespace is None:
@@ -111,6 +118,8 @@ def generate(
         logger.info("Repository root: %s", repo_root)
         logger.info("Configuration directory: %s", config)
         logger.info("Output directory: %s", output)
+        if plugins is not None:
+            logger.info("Plugins directory: %s (from %s)", plugins_dir, plugins.source)
 
     helmfile_path = config / "releases.yaml"
     helmfile_data = load_helmfile(helmfile_path) if helmfile_path.exists() else None
@@ -118,7 +127,7 @@ def generate(
         count = len(helmfile_data.releases)
         logger.info("Loaded releases.yaml: %d release%s", count, plural(count))
 
-    blocks = discover_blocks(config)
+    blocks = discover_blocks(config, plugins_dir)
     if verbose:
         logger.info(
             "Discovered %d config block%s: %s",
@@ -210,6 +219,7 @@ def generate(
             config_subject,
             written_paths,
             commit_paths,
+            plugins_source=plugins.source if plugins is not None else None,
         )
 
     return result
