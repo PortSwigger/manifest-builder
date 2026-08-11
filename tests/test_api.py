@@ -3,7 +3,7 @@
 """Tests for the reusable manifest-builder API."""
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 from unittest.mock import call
 
@@ -27,6 +27,7 @@ from manifest_builder.api import (
     _load_api_variables,
     _load_system_owner_roots,
     _make_deploy_id,
+    _object_ref_from_doc,
 )
 from manifest_builder.api import (
     generate as api_generate,
@@ -130,6 +131,50 @@ def test_get_version_returns_the_package_version() -> None:
     assert isinstance(get_version(), str)
 
 
+def test_object_ref_carries_the_api_version() -> None:
+    """A ref keeps the group that tells same-named kinds apart."""
+    ref = _object_ref_from_doc(
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "Role",
+            "metadata": {"name": "reader", "namespace": "idcat"},
+        }
+    )
+    assert ref == KubernetesObjectRef(
+        "Role", "idcat", "reader", "rbac.authorization.k8s.io/v1"
+    )
+    other = _object_ref_from_doc(
+        {
+            "apiVersion": "iam.aws.m.upbound.io/v1beta1",
+            "kind": "Role",
+            "metadata": {"name": "reader", "namespace": "idcat"},
+        }
+    )
+    assert ref != other
+
+
+@pytest.mark.parametrize("doc_api_version", [None, 3])
+def test_object_ref_without_a_usable_api_version(doc_api_version: object) -> None:
+    """A document that says nothing usable still yields a ref, with no group."""
+    doc: dict[str, Any] = {
+        "kind": "ConfigMap",
+        "metadata": {"name": "old", "namespace": "idcat"},
+    }
+    if doc_api_version is not None:
+        doc["apiVersion"] = doc_api_version
+    assert _object_ref_from_doc(doc) == KubernetesObjectRef("ConfigMap", "idcat", "old")
+
+
+def test_object_refs_sort_by_kind_namespace_and_name() -> None:
+    """The api_version field is last, so it does not disturb the sort order."""
+    refs = [
+        KubernetesObjectRef("Role", "idcat", "reader", "iam.aws.m.upbound.io/v1beta1"),
+        KubernetesObjectRef("ConfigMap", "idcat", "zed", "v1"),
+        KubernetesObjectRef("ConfigMap", "idcat", "alpha", "v1"),
+    ]
+    assert [ref.name for ref in sorted(refs)] == ["alpha", "zed", "reader"]
+
+
 def _commit_all(path: Path, message: bytes = b"commit") -> bytes:
     """Commit all changes in a temporary Dulwich repository."""
     porcelain.add(path)
@@ -182,11 +227,11 @@ metadata:
     deploy_id = _make_deploy_id(__version__, config_commit)
     assert result.deploy_id == deploy_id
     assert result.created_or_modified == {
-        KubernetesObjectRef("Deployment", "idcat", "idcat"),
-        KubernetesObjectRef("Namespace", None, "idcat"),
-        KubernetesObjectRef("Service", "idcat", "idcat"),
+        KubernetesObjectRef("Deployment", "idcat", "idcat", "apps/v1"),
+        KubernetesObjectRef("Namespace", None, "idcat", "v1"),
+        KubernetesObjectRef("Service", "idcat", "idcat", "v1"),
     }
-    assert result.removed == {KubernetesObjectRef("ConfigMap", "idcat", "old")}
+    assert result.removed == {KubernetesObjectRef("ConfigMap", "idcat", "old", "v1")}
 
     for path in result.written_paths:
         if path.suffix != ".yaml":
@@ -770,8 +815,8 @@ metadata:
     assert not old_stale.exists()
     assert (owners_dir / "system.toml").read_text() == 'owned = ["team-a"]\n'
     assert result.removed == {
-        KubernetesObjectRef("ConfigMap", "old-ns", "old"),
-        KubernetesObjectRef("ConfigMap", "team-a", "old"),
+        KubernetesObjectRef("ConfigMap", "old-ns", "old", "v1"),
+        KubernetesObjectRef("ConfigMap", "team-a", "old", "v1"),
     }
     status = porcelain.status(output)
     assert status.unstaged == []

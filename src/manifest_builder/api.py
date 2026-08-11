@@ -415,7 +415,12 @@ def _object_ref_from_doc(doc: Any) -> KubernetesObjectRef | None:
         return None
     if namespace is not None and not isinstance(namespace, str):
         namespace = None
-    return KubernetesObjectRef(kind=kind, namespace=namespace, name=name)
+    api_version = doc.get("apiVersion")
+    if not isinstance(api_version, str):
+        api_version = ""
+    return KubernetesObjectRef(
+        kind=kind, namespace=namespace, name=name, api_version=api_version
+    )
 
 
 def _cluster_output_paths(output: Path, paths: set[Path]) -> list[Path]:
