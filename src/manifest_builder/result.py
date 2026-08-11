@@ -13,6 +13,14 @@ class KubernetesObjectRef:
     kind: str
     namespace: str | None
     name: str
+    api_version: str = ""
+    """The document's apiVersion, for example ``rbac.authorization.k8s.io/v1``.
+
+    A kind alone is not unique in a cluster, so consumers that resolve a ref
+    through API discovery need the group to tell candidates apart. Declared
+    last with a default so the kind/namespace/name ordering and positional
+    construction both keep working.
+    """
 
 
 @dataclass
