@@ -39,6 +39,44 @@ CLUSTER_SCOPED_KINDS = {
 }
 
 
+def load_crd_scopes(documents: list[dict]) -> dict[tuple[str, str], str]:
+    """Read the scope of each custom resource defined by a CRD in ``documents``.
+
+    Charts that ship their own CustomResourceDefinitions describe the scope of
+    the kinds they introduce, which beats guessing from :data:`CLUSTER_SCOPED_KINDS`.
+
+    Returns:
+        Mapping of (API group, kind) to the CRD's ``spec.scope``
+    """
+    scopes: dict[tuple[str, str], str] = {}
+    for doc in documents:
+        if doc.get("kind") != "CustomResourceDefinition":
+            continue
+        spec = doc.get("spec") or {}
+        group = spec.get("group")
+        kind = (spec.get("names") or {}).get("kind")
+        scope = spec.get("scope")
+        if isinstance(group, str) and isinstance(kind, str) and isinstance(scope, str):
+            scopes[(group, kind)] = scope
+    return scopes
+
+
+def is_cluster_scoped(doc: dict, crd_scopes: dict[tuple[str, str], str]) -> bool:
+    """Report whether a Kubernetes object lives outside any namespace.
+
+    A CRD carried alongside the object is authoritative about the kinds it
+    defines; everything else falls back to :data:`CLUSTER_SCOPED_KINDS`.
+    """
+    kind = doc.get("kind")
+    api_version = doc.get("apiVersion")
+    if isinstance(kind, str) and isinstance(api_version, str):
+        group = api_version.rpartition("/")[0]
+        scope = crd_scopes.get((group, kind))
+        if scope is not None:
+            return scope == "Cluster"
+    return kind in CLUSTER_SCOPED_KINDS
+
+
 def make_k8s_name(name: str) -> str:
     """Convert a name to a Kubernetes-safe name by replacing periods with dashes.
 

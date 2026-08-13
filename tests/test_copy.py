@@ -138,6 +138,41 @@ rules: []
     assert paths == {out_file}
 
 
+def test_generate_copy_reads_scope_from_bundled_crd(tmp_path: Path) -> None:
+    """A CRD in the source directory settles the scope of the kinds it defines."""
+    manifests_dir = tmp_path / "manifests"
+    manifests_dir.mkdir()
+    (manifests_dir / "crd.yaml").write_text(
+        """\
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ingressclassparams.elbv2.k8s.aws
+spec:
+  group: elbv2.k8s.aws
+  scope: Cluster
+  names:
+    kind: IngressClassParams
+    plural: ingressclassparams
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: IngressClassParams
+metadata:
+  name: alb
+"""
+    )
+
+    output_dir = tmp_path / "output"
+    config = CopyConfig(name="alb", namespace=None, source=manifests_dir)
+    paths = generate_copy(config, output_dir)
+
+    assert paths == {
+        output_dir / "cluster" / "customresourcedefinition-ingressclassparams."
+        "elbv2.k8s.aws.yaml",
+        output_dir / "cluster" / "ingressclassparams-alb.yaml",
+    }
+
+
 def test_generate_copy_requires_namespace_for_namespaced_resource(
     tmp_path: Path,
 ) -> None:
