@@ -18,9 +18,10 @@ from manifest_builder.config import (
     validate_known_fields,
 )
 from manifest_builder.k8s import (
-    CLUSTER_SCOPED_KINDS,
     config_checksum,
     configmap_suffix_from_mount_path,
+    is_cluster_scoped,
+    load_crd_scopes,
     make_configmaps,
     make_k8s_name,
 )
@@ -189,9 +190,10 @@ def generate_copy(
             if doc:
                 docs.append(doc)
 
+    crd_scopes = load_crd_scopes(docs)
     needs_namespace = bool(config.config) or any(
         doc.get("kind")
-        and doc.get("kind") not in CLUSTER_SCOPED_KINDS
+        and not is_cluster_scoped(doc, crd_scopes)
         and "namespace" not in doc.get("metadata", {})
         for doc in docs
     )
@@ -202,10 +204,9 @@ def generate_copy(
         )
 
     for doc in docs:
-        kind = doc.get("kind")
         if (
-            kind
-            and kind not in CLUSTER_SCOPED_KINDS
+            doc.get("kind")
+            and not is_cluster_scoped(doc, crd_scopes)
             and "namespace" not in doc.get("metadata", {})
         ):
             doc.setdefault("metadata", {})["namespace"] = config.namespace
@@ -243,4 +244,4 @@ def generate_copy(
                         {"name": cm_name, "configMap": {"name": cm_name}}
                     )
 
-    return write_documents(docs, output_dir, config.namespace, config.name)
+    return write_documents(docs, output_dir, config.namespace, config.name, crd_scopes)

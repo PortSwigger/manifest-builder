@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from manifest_builder.k8s import CLUSTER_SCOPED_KINDS
+from manifest_builder.k8s import is_cluster_scoped, load_crd_scopes
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ def write_documents(
     output_dir: Path,
     namespace: str | None,
     app_name: str | None = None,
+    crd_scopes: dict[tuple[str, str], str] | None = None,
 ) -> set[Path]:
     """Write each Kubernetes document to its own file under ``output_dir``.
 
@@ -99,10 +100,15 @@ def write_documents(
         output_dir: Base output directory
         namespace: Namespace for objects that do not set one themselves
         app_name: If provided, written as a comment at the top of each file
+        crd_scopes: Scopes of custom resources, as returned by
+            :func:`~manifest_builder.k8s.load_crd_scopes`. Read from
+            ``documents`` when not given.
 
     Returns:
         Set of paths written
     """
+    if crd_scopes is None:
+        crd_scopes = load_crd_scopes(documents)
     written: set[Path] = set()
     for doc in documents:
         kind = doc.get("kind", "unknown")
@@ -117,7 +123,7 @@ def write_documents(
         if not kind or not name:
             continue
 
-        if kind in CLUSTER_SCOPED_KINDS:
+        if is_cluster_scoped(doc, crd_scopes):
             subdir = "cluster"
         else:
             subdir = doc.get("metadata", {}).get("namespace") or namespace
@@ -147,6 +153,41 @@ def _manifest_filename(kind: str, name: str) -> str:
     return f"{kind.lower()}-{name}.yaml".replace(":", "_")
 
 
+def _expand_lists(
+    documents: list[dict], default_namespace: str | None = None
+) -> list[tuple[dict, str | None]]:
+    """Replace ``kind: List`` documents with the objects they carry.
+
+    Some charts wrap several objects in a single ``List``. Each item becomes a
+    document of its own, and nested lists are expanded too.
+
+    Returns:
+        Each document paired with the namespace of the list it came from, which
+        is the namespace to fall back on for that document
+    """
+    expanded: list[tuple[dict, str | None]] = []
+    for doc in documents:
+        if doc.get("kind") != "List":
+            expanded.append((doc, default_namespace))
+            continue
+
+        items = doc.get("items") or []
+        if not isinstance(items, list):
+            name = doc.get("metadata", {}).get("name")
+            raise TypeError(f"items of List {name} is not a list")
+
+        list_namespace = (doc.get("metadata") or {}).get("namespace")
+        if not isinstance(list_namespace, str):
+            list_namespace = default_namespace
+        for item in items:
+            if not isinstance(item, dict):
+                name = doc.get("metadata", {}).get("name")
+                raise TypeError(f"item of List {name} is not a mapping")
+            expanded.extend(_expand_lists([item], list_namespace))
+
+    return expanded
+
+
 def write_manifests(
     content: str,
     output_dir: Path,
@@ -158,7 +199,10 @@ def write_manifests(
 
     Files are named following the pattern: kind-name.yaml, written into
     output_dir/<namespace>/ for namespaced resources or output_dir/cluster/
-    for cluster-scoped resources.
+    for cluster-scoped resources, where a CustomResourceDefinition among the
+    documents decides the scope of the kinds it defines. ``kind: List``
+    documents are expanded so each item they carry gets its own file, falling
+    back to the list's namespace rather than the chart namespace.
 
     Args:
         content: YAML manifest content with multiple documents
@@ -172,12 +216,12 @@ def write_manifests(
     Raises:
         OSError: If files cannot be written
     """
-    documents = load_all_yaml(content)
+    expanded = _expand_lists(load_all_yaml(content))
 
     # Filter out Helm test hook documents and log them
-    filtered_documents = []
+    filtered_documents: list[tuple[dict, str | None]] = []
     skipped_hooks = 0
-    for doc in documents:
+    for doc, list_namespace in expanded:
         kind = doc.get("kind", "unknown")
         annotations = doc.get("metadata", {}).get("annotations") or {}
         if not isinstance(annotations, dict):
@@ -191,19 +235,20 @@ def write_manifests(
             skipped_hooks += 1
             logger.debug(f"Skipping {kind} {name} (helm.sh/hook={hook_value})")
         else:
-            filtered_documents.append(doc)
-    documents = filtered_documents
+            filtered_documents.append((doc, list_namespace))
     if skipped_hooks:
         logger.info(f"Skipped {skipped_hooks} helm hook objects")
 
+    documents = [doc for doc, _ in filtered_documents]
+    crd_scopes = load_crd_scopes(documents)
+
     # Add namespace to namespaced resources that don't already have one
-    for doc in documents:
-        kind = doc.get("kind")
+    for doc, list_namespace in filtered_documents:
         if (
-            kind
-            and kind not in CLUSTER_SCOPED_KINDS
+            doc.get("kind")
+            and not is_cluster_scoped(doc, crd_scopes)
             and "namespace" not in doc.get("metadata", {})
         ):
-            doc.setdefault("metadata", {})["namespace"] = namespace
+            doc.setdefault("metadata", {})["namespace"] = list_namespace or namespace
 
-    return write_documents(documents, output_dir, namespace, app_name)
+    return write_documents(documents, output_dir, namespace, app_name, crd_scopes)

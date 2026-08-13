@@ -389,6 +389,194 @@ metadata:
     assert len(paths) == 1
 
 
+INGRESS_CLASS_PARAMS_CRD_YAML = """\
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ingressclassparams.elbv2.k8s.aws
+spec:
+  group: elbv2.k8s.aws
+  scope: Cluster
+  names:
+    kind: IngressClassParams
+    plural: ingressclassparams
+"""
+
+LIST_YAML = """\
+apiVersion: v1
+kind: List
+metadata:
+  name: ingress-class
+  namespace: kube-system
+items:
+- apiVersion: elbv2.k8s.aws/v1beta1
+  kind: IngressClassParams
+  metadata:
+    name: alb
+    labels:
+      app.kubernetes.io/managed-by: Helm
+      helm.sh/chart: aws-load-balancer-controller-3.4.1
+- apiVersion: networking.k8s.io/v1
+  kind: IngressClass
+  metadata:
+    name: alb
+  spec:
+    controller: ingress.k8s.aws/alb
+"""
+
+
+def test_write_manifests_splits_list_into_one_file_per_item(tmp_path: Path) -> None:
+    """A `kind: List` wrapper is expanded into a file per item it carries."""
+    paths = write_manifests(LIST_YAML, tmp_path, "default")
+
+    assert paths == {
+        tmp_path / "kube-system" / "ingressclassparams-alb.yaml",
+        tmp_path / "cluster" / "ingressclass-alb.yaml",
+    }
+    # the namespaced item inherits the list's namespace, and helm metadata is
+    # stripped from items just like from top-level documents
+    params = yaml.safe_load(
+        (tmp_path / "kube-system" / "ingressclassparams-alb.yaml").read_text()
+    )
+    assert params["metadata"]["namespace"] == "kube-system"
+    assert "labels" not in params["metadata"]
+    # the cluster-scoped item stays free of a namespace
+    ingress_class = yaml.safe_load(
+        (tmp_path / "cluster" / "ingressclass-alb.yaml").read_text()
+    )
+    assert "namespace" not in ingress_class["metadata"]
+
+
+def test_write_manifests_reads_scope_from_bundled_crd(tmp_path: Path) -> None:
+    """A CRD shipped by the chart settles the scope of the kinds it defines."""
+    paths = write_manifests(
+        INGRESS_CLASS_PARAMS_CRD_YAML + "---\n" + LIST_YAML, tmp_path, "default"
+    )
+
+    assert (tmp_path / "cluster" / "ingressclassparams-alb.yaml") in paths, (
+        "IngressClassParams is Cluster-scoped per the CRD"
+    )
+    params = yaml.safe_load(
+        (tmp_path / "cluster" / "ingressclassparams-alb.yaml").read_text()
+    )
+    assert "namespace" not in params["metadata"]
+
+
+def test_write_manifests_crd_can_mark_a_kind_namespaced(tmp_path: Path) -> None:
+    """A Namespaced CRD wins over the built-in cluster-scoped kind names."""
+    content = """\
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ingressclasses.example.com
+spec:
+  group: example.com
+  scope: Namespaced
+  names:
+    kind: IngressClass
+    plural: ingressclasses
+---
+apiVersion: example.com/v1
+kind: IngressClass
+metadata:
+  name: mine
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: builtin
+"""
+    paths = write_manifests(content, tmp_path, "default")
+
+    assert (tmp_path / "default" / "ingressclass-mine.yaml") in paths
+    # the CRD only speaks for its own group, so the built-in IngressClass of
+    # networking.k8s.io keeps its cluster scope
+    assert (tmp_path / "cluster" / "ingressclass-builtin.yaml") in paths
+
+
+def test_write_manifests_list_items_fall_back_to_chart_namespace(
+    tmp_path: Path,
+) -> None:
+    """List items get the chart namespace when the list declares none."""
+    content = """\
+apiVersion: v1
+kind: List
+metadata:
+  name: configs
+items:
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: my-config
+  data: {}
+"""
+    paths = write_manifests(content, tmp_path, "fallback-ns")
+
+    assert paths == {tmp_path / "fallback-ns" / "configmap-my-config.yaml"}
+
+
+def test_write_manifests_expands_nested_lists(tmp_path: Path) -> None:
+    content = """\
+apiVersion: v1
+kind: List
+metadata:
+  name: outer
+items:
+- apiVersion: v1
+  kind: List
+  metadata:
+    name: inner
+    namespace: inner-ns
+  items:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: nested
+    data: {}
+"""
+    paths = write_manifests(content, tmp_path, "default")
+
+    assert paths == {tmp_path / "inner-ns" / "configmap-nested.yaml"}
+
+
+def test_write_manifests_skips_hooks_inside_lists(tmp_path: Path) -> None:
+    content = """\
+apiVersion: v1
+kind: List
+metadata:
+  name: mixed
+  namespace: hooks-ns
+items:
+- apiVersion: batch/v1
+  kind: Job
+  metadata:
+    name: my-hook
+    annotations:
+      helm.sh/hook: post-install
+  spec: {}
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: my-config
+  data: {}
+"""
+    paths = write_manifests(content, tmp_path, "default")
+
+    assert paths == {tmp_path / "hooks-ns" / "configmap-my-config.yaml"}
+
+
+def test_write_manifests_raises_on_non_list_items(tmp_path: Path) -> None:
+    content = """\
+apiVersion: v1
+kind: List
+metadata:
+  name: broken
+items: "not-a-list"
+"""
+    with pytest.raises(TypeError, match=r"items of List broken is not a list"):
+        write_manifests(content, tmp_path, "default")
+
+
 def test_write_manifests_raises_on_non_dict_annotations(tmp_path: Path) -> None:
     """A YAML document with non-dict annotations should raise a descriptive error."""
     yaml_bad_annotations = """\
