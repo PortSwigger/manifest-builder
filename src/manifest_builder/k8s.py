@@ -8,11 +8,16 @@ from mounted config files, and inject volumes into pod specs.
 
 import hashlib
 import json
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pystache
 from pystache.common import MissingTags
+
+#: Scopes a custom resource may have, as spelled in a CustomResourceDefinition.
+SCOPES = ("Cluster", "Namespaced")
 
 # Kubernetes resource kinds that are cluster-scoped (not namespaced).
 #
@@ -22,6 +27,11 @@ from pystache.common import MissingTags
 # kinds below: crossplane applies its own CRDs at runtime from the core binary,
 # and its Helm chart ships none, so nothing in a generated manifest set ever
 # says what scope they have.
+#
+# This set is keyed on the bare kind, so it cannot describe a kind whose scope
+# differs between API groups -- aws.upbound.io/ProviderConfig is cluster-scoped
+# while aws.m.upbound.io/ProviderConfig is namespaced. A config directory
+# declares those through a :class:`ScopeProvider` plugin instead.
 CLUSTER_SCOPED_KINDS = {
     "APIService",
     "CertificateSigningRequest",
@@ -49,6 +59,69 @@ CLUSTER_SCOPED_KINDS = {
 }
 
 
+class ScopeProvider(ABC):
+    """Declares the scope of kinds nothing in a manifest set describes.
+
+    A config directory supplies one from its ``plugins`` subdirectory, the same
+    way it supplies a :class:`~manifest_builder.blocks.ConfigBlock`, and
+    :func:`~manifest_builder.discovery.discover_blocks` puts what it returns
+    where :func:`is_cluster_scoped` will find it. That lets a deployment name a
+    kind this package has never heard of, group and all, without a release here.
+
+    Reach for it when a kind is cluster-scoped but its CustomResourceDefinition
+    never reaches a generated manifest set -- an operator that applies its own
+    CRDs at runtime, say -- or when the bare kind is ambiguous because two API
+    groups scope it differently.
+    """
+
+    @abstractmethod
+    def scopes(self) -> Mapping[tuple[str, str], str]:
+        """Return a mapping of (API group, kind) to ``"Cluster"``/``"Namespaced"``.
+
+        The group is the part of ``apiVersion`` before the ``/``, empty for core
+        objects.
+        """
+
+
+_declared_scopes: dict[tuple[str, str], str] = {}
+
+
+def declare_scopes(scopes: Mapping[tuple[str, str], str]) -> None:
+    """Replace the scopes declared by plugins for this generation run.
+
+    Replaces rather than merges: a long-running process generates from many
+    config directories, and one directory's declarations must not leak into the
+    next. Called by :func:`~manifest_builder.discovery.discover_blocks`.
+
+    Raises:
+        ValueError: If a key is not a (group, kind) pair of strings, or a scope
+            is not one of :data:`SCOPES`.
+    """
+    validated: dict[tuple[str, str], str] = {}
+    for key, scope in scopes.items():
+        match key:
+            case (str() as group, str() as kind) if kind:
+                pass
+            case _:
+                raise ValueError(
+                    f"Declared scope key {key!r} must be a (group, kind) pair of "
+                    "strings with a non-empty kind"
+                )
+        if scope not in SCOPES:
+            raise ValueError(
+                f"Declared scope for {group}/{kind} must be one of "
+                f"{', '.join(SCOPES)}, not {scope!r}"
+            )
+        validated[(group, kind)] = scope
+    _declared_scopes.clear()
+    _declared_scopes.update(validated)
+
+
+def declared_scopes() -> dict[tuple[str, str], str]:
+    """Return the scopes plugins declared for this generation run."""
+    return dict(_declared_scopes)
+
+
 def load_crd_scopes(documents: list[dict]) -> dict[tuple[str, str], str]:
     """Read the scope of each custom resource defined by a CRD in ``documents``.
 
@@ -74,14 +147,20 @@ def load_crd_scopes(documents: list[dict]) -> dict[tuple[str, str], str]:
 def is_cluster_scoped(doc: dict, crd_scopes: dict[tuple[str, str], str]) -> bool:
     """Report whether a Kubernetes object lives outside any namespace.
 
-    A CRD carried alongside the object is authoritative about the kinds it
-    defines; everything else falls back to :data:`CLUSTER_SCOPED_KINDS`.
+    Consulted in order, each step knowing the object's API group where the next
+    does not:
+
+    1. a CRD carried alongside the object, which is authoritative about the
+       kinds it defines
+    2. what a :class:`ScopeProvider` plugin declared for this run, for kinds no
+       rendered CRD describes
+    3. :data:`CLUSTER_SCOPED_KINDS`, keyed on the bare kind
     """
     kind = doc.get("kind")
     api_version = doc.get("apiVersion")
     if isinstance(kind, str) and isinstance(api_version, str):
         group = api_version.rpartition("/")[0]
-        scope = crd_scopes.get((group, kind))
+        scope = crd_scopes.get((group, kind)) or _declared_scopes.get((group, kind))
         if scope is not None:
             return scope == "Cluster"
     return kind in CLUSTER_SCOPED_KINDS
