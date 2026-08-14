@@ -14,7 +14,14 @@ from typing import Any
 import pystache
 from pystache.common import MissingTags
 
-# Kubernetes resource kinds that are cluster-scoped (not namespaced)
+# Kubernetes resource kinds that are cluster-scoped (not namespaced).
+#
+# A CustomResourceDefinition rendered alongside a custom resource is
+# authoritative about its scope, so custom kinds only need listing here when no
+# chart in the run defines them. That is the case for the crossplane pkg.crossplane.io
+# kinds below: crossplane applies its own CRDs at runtime from the core binary,
+# and its Helm chart ships none, so nothing in a generated manifest set ever
+# says what scope they have.
 CLUSTER_SCOPED_KINDS = {
     "APIService",
     "CertificateSigningRequest",
@@ -24,13 +31,16 @@ CLUSTER_SCOPED_KINDS = {
     "CSIDriver",
     "CSINode",
     "CustomResourceDefinition",
+    "DeploymentRuntimeConfig",
     "FlowSchema",
+    "Function",
     "IngressClass",
     "Namespace",
     "Node",
     "PersistentVolume",
     "PriorityClass",
     "PriorityLevelConfiguration",
+    "Provider",
     "RuntimeClass",
     "StorageClass",
     "MutatingWebhookConfiguration",

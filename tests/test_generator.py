@@ -88,6 +88,76 @@ spec:
     assert "namespace" not in doc.get("metadata", {})
 
 
+@pytest.mark.parametrize(
+    ("api_version", "kind", "filename"),
+    [
+        ("pkg.crossplane.io/v1", "Provider", "provider-provider-aws-iam.yaml"),
+        (
+            "pkg.crossplane.io/v1beta1",
+            "DeploymentRuntimeConfig",
+            "deploymentruntimeconfig-provider-aws-iam.yaml",
+        ),
+        ("pkg.crossplane.io/v1", "Function", "function-provider-aws-iam.yaml"),
+    ],
+)
+def test_write_manifests_crossplane_pkg_kinds_are_cluster_scoped(
+    tmp_path: Path, api_version: str, kind: str, filename: str
+) -> None:
+    """The crossplane pkg.crossplane.io kinds do not get a namespace.
+
+    Unlike most custom resources these cannot be learned from a
+    CustomResourceDefinition: crossplane applies its own CRDs at runtime and its
+    Helm chart ships none, so nothing in a generated manifest set states their
+    scope and the static list has to carry them.
+    """
+    content = f"""\
+apiVersion: {api_version}
+kind: {kind}
+metadata:
+  name: provider-aws-iam
+spec: {{}}
+"""
+
+    paths = write_manifests(content, tmp_path, "crossplane-system")
+
+    assert len(paths) == 1
+    (path,) = paths
+    assert path == tmp_path / "cluster" / filename
+    doc = yaml.safe_load(path.read_text())
+    assert "namespace" not in doc.get("metadata", {})
+
+
+def test_write_manifests_crd_scope_beats_the_static_list(tmp_path: Path) -> None:
+    """A CRD in the same document set overrides the static list.
+
+    Guards the precedence that keeps the list a fallback rather than an override:
+    an unrelated Provider kind that a chart declares Namespaced is treated that
+    way, so listing the crossplane kinds cannot capture another group's.
+    """
+    content = """\
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: providers.example.invalid
+spec:
+  group: example.invalid
+  scope: Namespaced
+  names:
+    kind: Provider
+---
+apiVersion: example.invalid/v1
+kind: Provider
+metadata:
+  name: not-crossplane
+spec: {}
+"""
+
+    paths = write_manifests(content, tmp_path, "somewhere")
+
+    provider = next(p for p in paths if p.name.startswith("provider-not-crossplane"))
+    assert provider.parent.name == "somewhere"
+
+
 def test_write_manifests_replaces_colons_in_filenames(tmp_path: Path) -> None:
     """Object names with colons keep their metadata but get safe filenames."""
     content = """\
