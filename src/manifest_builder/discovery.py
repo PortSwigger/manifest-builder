@@ -7,6 +7,11 @@ A config directory may supply more of its own in a ``plugins`` subdirectory,
 letting a config repository add a config block without changing this package.
 A caller whose config comes from a repository that does not carry the plugins
 needed to parse it can point generation at a second plugins directory as well.
+
+A plugins directory may also carry a :class:`~manifest_builder.k8s.ScopeProvider`,
+declaring the scope of kinds nothing in a manifest set describes. Those are
+registered here too, so a deployment can name such a kind without a release of
+this package.
 """
 
 import importlib
@@ -23,6 +28,7 @@ from types import ModuleType
 from typing import Any
 
 from manifest_builder.blocks import ConfigBlock
+from manifest_builder.k8s import ScopeProvider, declare_scopes
 
 logger = logging.getLogger(__name__)
 
@@ -70,20 +76,29 @@ def discover_blocks(
         external_plugins: A further plugins directory, for config that comes
             from a repository not holding the plugins needed to parse it.
 
+    Any ScopeProvider the plugins define is registered as a side effect, so the
+    resource scopes in force are exactly those this run's plugins declare. A call
+    with no plugins directory clears them.
+
     Returns:
         Block instances ordered by the top-level TOML key they own, so a run
         is reproducible regardless of filesystem or import order.
 
     Raises:
-        ValueError: If two blocks claim the same top-level key, or the two
-            plugins directories offer the same module name.
+        ValueError: If two blocks claim the same top-level key, the two plugins
+            directories offer the same module name, or two ScopeProviders
+            disagree about one kind's scope.
     """
     classes = list(_builtin_block_classes())
     plugin_classes: list[type[ConfigBlock[Any]]] = []
+    scope_classes: list[type[ScopeProvider]] = []
     plugin_count = 0
     if config_dir is not None or external_plugins is not None:
-        plugin_count, plugin_classes = _load_plugins(config_dir, external_plugins)
+        plugin_count, plugin_classes, scope_classes = _load_plugins(
+            config_dir, external_plugins
+        )
         classes.extend(plugin_classes)
+    declare_scopes(_collect_scopes(scope_classes))
 
     blocks: dict[str, ConfigBlock[Any]] = {}
     for block_class in classes:
@@ -113,6 +128,38 @@ def discover_blocks(
     return [blocks[key] for key in sorted(blocks)]
 
 
+def _collect_scopes(
+    scope_classes: list[type[ScopeProvider]],
+) -> dict[tuple[str, str], str]:
+    """Merge what every discovered ScopeProvider declares.
+
+    Raises:
+        ValueError: If two providers give one kind conflicting scopes. Silently
+            letting import order decide would make generation unpredictable.
+    """
+    merged: dict[tuple[str, str], str] = {}
+    origin: dict[tuple[str, str], str] = {}
+    for scope_class in scope_classes:
+        for key, scope in scope_class().scopes().items():
+            previous = merged.get(key)
+            if previous is not None and previous != scope:
+                group, kind = key
+                raise ValueError(
+                    f"{origin[key]} and {scope_class.__name__} disagree about the "
+                    f"scope of {group}/{kind}: {previous} and {scope}"
+                )
+            merged[key] = scope
+            origin[key] = scope_class.__name__
+    if merged:
+        logger.debug(
+            "Plugins declared the scope of %d kind%s: %s",
+            len(merged),
+            "" if len(merged) == 1 else "s",
+            ", ".join(f"{g}/{k}={s}" for (g, k), s in sorted(merged.items())),
+        )
+    return merged
+
+
 def _quoted_list(names: list[str]) -> str:
     """Render names as a quoted, comma-separated English list."""
     quoted = [f'"{name}"' for name in names]
@@ -136,12 +183,12 @@ def _builtin_block_classes() -> Iterator[type[ConfigBlock[Any]]]:
 def _load_plugins(
     config_dir: Path | None,
     external_plugins: Path | None = None,
-) -> tuple[int, list[type[ConfigBlock[Any]]]]:
+) -> tuple[int, list[type[ConfigBlock[Any]]], list[type[ScopeProvider]]]:
     """Import plugin modules from ``<config_dir>/plugins`` and ``external_plugins``.
 
     Returns:
-        The number of plugin modules that contributed at least one block,
-        and the block classes they define.
+        The number of plugin modules that contributed at least one block or scope
+        provider, the block classes they define, and the scope providers.
     """
     plugins_dirs: list[Path] = []
     if config_dir is not None and (config_dir / PLUGINS_DIR_NAME).is_dir():
@@ -151,9 +198,10 @@ def _load_plugins(
             raise ValueError(f"Plugins directory does not exist: {external_plugins}")
         plugins_dirs.append(external_plugins)
     if not plugins_dirs:
-        return 0, []
+        return 0, [], []
 
     classes: list[type[ConfigBlock[Any]]] = []
+    scope_classes: list[type[ScopeProvider]] = []
     contributing = 0
 
     with _PLUGIN_LOAD_LOCK:
@@ -175,19 +223,23 @@ def _load_plugins(
                         f"Failed to load plugin '{name}' from {plugins_dir}: {e}"
                     ) from e
                 found = list(_block_classes_in(module))
-                if found:
+                found_scopes = list(_classes_in(module, ScopeProvider))
+                if found or found_scopes:
                     contributing += 1
                     logger.debug(
                         "Loaded plugin %s: %s",
                         name,
-                        ", ".join(sorted(cls.__name__ for cls in found)),
+                        ", ".join(
+                            sorted(cls.__name__ for cls in (*found, *found_scopes))
+                        ),
                     )
                 classes.extend(found)
+                scope_classes.extend(found_scopes)
         finally:
             if write_bytecode:
                 sys.dont_write_bytecode = False
 
-    return contributing, classes
+    return contributing, classes, scope_classes
 
 
 def _is_test_module(name: str) -> bool:
@@ -276,8 +328,13 @@ def _register_plugins_package(plugins_dirs: list[Path]) -> None:
 
 def _block_classes_in(module: ModuleType) -> Iterator[type[ConfigBlock[Any]]]:
     """Yield concrete ConfigBlock subclasses a module defines itself."""
+    return _classes_in(module, ConfigBlock)
+
+
+def _classes_in[T](module: ModuleType, base: type[T]) -> Iterator[type[T]]:
+    """Yield concrete subclasses of ``base`` that a module defines itself."""
     for _, member in inspect.getmembers(module, inspect.isclass):
-        if not issubclass(member, ConfigBlock) or member is ConfigBlock:
+        if not issubclass(member, base) or member is base:
             continue
         # Skip classes merely imported into the module, and abstract bases.
         if member.__module__ != module.__name__ or inspect.isabstract(member):

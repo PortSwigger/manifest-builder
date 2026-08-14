@@ -15,6 +15,7 @@ from manifest_builder.discovery import (
     _quoted_list,
     discover_blocks,
 )
+from manifest_builder.k8s import declare_scopes, declared_scopes, is_cluster_scoped
 
 # A plugin defining one config block, mirroring what a config repo would ship.
 GREETING_PLUGIN = '''
@@ -81,10 +82,34 @@ class GreetingBlock(ConfigBlock[GreetingConfig]):
 
 BUILTIN_KEYS = ["copy"]
 
+# A plugin declaring resource scopes from a TOML file beside it, which is how a
+# config repo names a kind without a release of this package.
+SCOPES_PLUGIN = '''
+"""Resource scopes for kinds no rendered CRD describes."""
+
+import tomllib
+from collections.abc import Mapping
+from pathlib import Path
+
+from manifest_builder.k8s import ScopeProvider
+
+SCOPES_FILE = Path(__file__).parent / "resource-scopes.toml"
+
+
+class TomlScopes(ScopeProvider):
+    def scopes(self) -> Mapping[tuple[str, str], str]:
+        data = tomllib.loads(SCOPES_FILE.read_text())
+        return {
+            (group, kind): scope
+            for group, kinds in data.items()
+            for kind, scope in kinds.items()
+        }
+'''
+
 
 @pytest.fixture(autouse=True)
 def _clear_plugin_imports():
-    """Keep plugin modules from leaking between tests."""
+    """Keep plugin modules and declared scopes from leaking between tests."""
     yield
     for name in [
         name
@@ -92,6 +117,7 @@ def _clear_plugin_imports():
         if name == PLUGINS_PACKAGE or name.startswith(f"{PLUGINS_PACKAGE}.")
     ]:
         del sys.modules[name]
+    declare_scopes({})
 
 
 def _write_plugin(config_dir: Path, name: str, source: str) -> Path:
@@ -504,3 +530,177 @@ def test_plugin_block_generates_manifests_end_to_end(tmp_path: Path) -> None:
     manifest = output / "welcomer" / "configmap-welcomer.yaml"
     assert manifest.exists()
     assert yaml.safe_load(manifest.read_text())["data"]["message"] == "hi from a plugin"
+
+
+# ---------------------------------------------------------------------------
+# Plugin-declared resource scopes
+# ---------------------------------------------------------------------------
+
+
+def _write_scopes(config_dir: Path, toml: str) -> None:
+    _write_plugin(config_dir, "resource_scopes", SCOPES_PLUGIN)
+    (config_dir / "plugins" / "resource-scopes.toml").write_text(textwrap.dedent(toml))
+
+
+def test_a_plugin_can_declare_a_scope_from_a_toml_file(tmp_path: Path) -> None:
+    """The whole point: a kind is named in config, not in this package."""
+    _write_scopes(
+        tmp_path,
+        """\
+        ["aws.upbound.io"]
+        ProviderConfig = "Cluster"
+        """,
+    )
+
+    discover_blocks(tmp_path)
+
+    assert declared_scopes() == {("aws.upbound.io", "ProviderConfig"): "Cluster"}
+    doc = {"apiVersion": "aws.upbound.io/v1beta1", "kind": "ProviderConfig"}
+    assert is_cluster_scoped(doc, {}) is True
+
+
+def test_declared_scopes_distinguish_api_groups(tmp_path: Path) -> None:
+    """The case the bare-kind set cannot express.
+
+    aws.upbound.io/ProviderConfig is cluster-scoped while
+    aws.m.upbound.io/ProviderConfig is namespaced, so one kind name has to
+    resolve two ways in the same run.
+    """
+    _write_scopes(
+        tmp_path,
+        """\
+        ["aws.upbound.io"]
+        ProviderConfig = "Cluster"
+
+        ["aws.m.upbound.io"]
+        ProviderConfig = "Namespaced"
+        """,
+    )
+
+    discover_blocks(tmp_path)
+
+    legacy = {"apiVersion": "aws.upbound.io/v1beta1", "kind": "ProviderConfig"}
+    scoped = {"apiVersion": "aws.m.upbound.io/v1beta1", "kind": "ProviderConfig"}
+    assert is_cluster_scoped(legacy, {}) is True
+    assert is_cluster_scoped(scoped, {}) is False
+
+
+def test_a_rendered_crd_still_beats_a_declared_scope(tmp_path: Path) -> None:
+    """Precedence: what a chart ships wins over what config declares."""
+    _write_scopes(
+        tmp_path,
+        """\
+        ["example.invalid"]
+        Widget = "Cluster"
+        """,
+    )
+    discover_blocks(tmp_path)
+
+    doc = {"apiVersion": "example.invalid/v1", "kind": "Widget"}
+    crd_scopes = {("example.invalid", "Widget"): "Namespaced"}
+    assert is_cluster_scoped(doc, crd_scopes) is False
+
+
+def test_a_declared_scope_beats_the_static_kind_set(tmp_path: Path) -> None:
+    """A declared Namespaced scope overrides CLUSTER_SCOPED_KINDS.
+
+    Provider is in the static set for crossplane's sake, but another group's
+    Provider may well be namespaced, and config gets to say so.
+    """
+    _write_scopes(
+        tmp_path,
+        """\
+        ["example.invalid"]
+        Provider = "Namespaced"
+        """,
+    )
+    discover_blocks(tmp_path)
+
+    assert (
+        is_cluster_scoped({"apiVersion": "example.invalid/v1", "kind": "Provider"}, {})
+        is False
+    )
+    # crossplane's own Provider is untouched.
+    assert (
+        is_cluster_scoped(
+            {"apiVersion": "pkg.crossplane.io/v1", "kind": "Provider"}, {}
+        )
+        is True
+    )
+
+
+def test_scopes_are_replaced_between_runs(tmp_path: Path) -> None:
+    """One config directory's declarations must not leak into the next.
+
+    A long-running process generates from many config directories, so scopes are
+    replaced per discovery rather than accumulated.
+    """
+    first = tmp_path / "first"
+    first.mkdir()
+    _write_scopes(first, '["a.invalid"]\nWidget = "Cluster"\n')
+    discover_blocks(first)
+    assert ("a.invalid", "Widget") in declared_scopes()
+
+    second = tmp_path / "second"
+    second.mkdir()
+    _write_scopes(second, '["b.invalid"]\nGadget = "Cluster"\n')
+    discover_blocks(second)
+
+    assert declared_scopes() == {("b.invalid", "Gadget"): "Cluster"}
+
+
+def test_a_config_dir_without_plugins_clears_declared_scopes(tmp_path: Path) -> None:
+    with_plugins = tmp_path / "with"
+    with_plugins.mkdir()
+    _write_scopes(with_plugins, '["a.invalid"]\nWidget = "Cluster"\n')
+    discover_blocks(with_plugins)
+    assert declared_scopes()
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    discover_blocks(bare)
+
+    assert declared_scopes() == {}
+
+
+def test_an_unknown_scope_value_is_rejected(tmp_path: Path) -> None:
+    _write_scopes(tmp_path, '["a.invalid"]\nWidget = "Clustered"\n')
+
+    with pytest.raises(ValueError, match="must be one of Cluster, Namespaced"):
+        discover_blocks(tmp_path)
+
+
+def test_scope_providers_that_disagree_are_rejected(tmp_path: Path) -> None:
+    """Letting import order decide would make generation unpredictable."""
+    _write_scopes(tmp_path, '["a.invalid"]\nWidget = "Cluster"\n')
+    _write_plugin(
+        tmp_path,
+        "other_scopes",
+        """
+        from collections.abc import Mapping
+
+        from manifest_builder.k8s import ScopeProvider
+
+
+        class OtherScopes(ScopeProvider):
+            def scopes(self) -> Mapping[tuple[str, str], str]:
+                return {("a.invalid", "Widget"): "Namespaced"}
+        """,
+    )
+
+    with pytest.raises(
+        ValueError, match="disagree about the scope of a.invalid/Widget"
+    ):
+        discover_blocks(tmp_path)
+
+
+def test_a_scope_only_plugin_counts_as_contributing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A plugin declaring only scopes is still a plugin that was loaded."""
+    _write_scopes(tmp_path, '["a.invalid"]\nWidget = "Cluster"\n')
+
+    with caplog.at_level(logging.INFO):
+        discover_blocks(tmp_path)
+
+    assert "Found 1 plugin" in caplog.text
