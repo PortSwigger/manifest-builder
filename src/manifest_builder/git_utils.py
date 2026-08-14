@@ -184,13 +184,19 @@ def is_git_dirty(path: Path) -> bool:
 
 
 def get_git_manifest_changes(path: Path) -> GitManifestChanges:
-    """Return changed YAML files below ``path`` using Dulwich status."""
+    """Return changed YAML files below ``path`` using Dulwich status.
+
+    The status is taken with ``untracked_files="all"``: Dulwich's default
+    reports a wholly untracked directory as the directory itself rather than
+    the files in it, which would hide every manifest of a newly added
+    namespace or application from the change set.
+    """
     try:
         repo = Repo.discover(path)
         try:
             repo_root = Path(repo.path).resolve()
             output_root = path.resolve()
-            status = porcelain.status(repo)
+            status = porcelain.status(repo, untracked_files="all")
             changes = GitManifestChanges()
 
             for raw_path in status.staged.get("add", []):

@@ -240,6 +240,55 @@ metadata:
         assert doc["metadata"]["annotations"][DEPLOY_ID_ANNOTATION] == deploy_id
 
 
+def test_generate_reports_manifests_below_a_new_directory(tmp_path: Path) -> None:
+    """The first manifests of an application are created, not invisible.
+
+    A directory git has never seen is untracked as a whole, so the manifests
+    below it have to be found through it rather than being reported in their
+    own right.
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+    init_test_repo(output)
+    existing = output / "idcat" / "configmap-settings.yaml"
+    existing.parent.mkdir()
+    existing.write_text(
+        """\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: idcat
+"""
+    )
+    _commit_all(output, b"generated manifests")
+    manifest = output / "blackbox-exporter" / "deployment-blackbox-exporter.yaml"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackbox-exporter
+  namespace: observability
+"""
+    )
+    config_commit = "a" * 40
+
+    result = _collect_generation_result(
+        output, {manifest}, config_commit, {"idcat", "blackbox-exporter"}
+    )
+
+    assert result.created_or_modified == {
+        KubernetesObjectRef(
+            "Deployment", "observability", "blackbox-exporter", "apps/v1"
+        )
+    }
+    assert result.removed == set()
+    doc = yaml.safe_load(manifest.read_text())
+    assert doc["metadata"]["annotations"][DEPLOY_ID_ANNOTATION] == result.deploy_id
+
+
 def test_generate_ignores_deploy_id_only_manifest_changes(tmp_path: Path) -> None:
     """A new deploy id alone should not make otherwise unchanged objects modified."""
     output = tmp_path / "output"
