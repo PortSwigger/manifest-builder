@@ -747,6 +747,12 @@ def test_ensure_namespaces_creates_namespace_for_each_directory(
     doc = yaml.safe_load(ns_file.read_text())
     assert doc["kind"] == "Namespace"
     assert doc["metadata"]["name"] == "my-app"
+    # PLAT-739: generated namespaces prune last so Crossplane can finalize the
+    # in-namespace resources before the namespace itself is removed.
+    assert (
+        doc["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+        == "PruneLast=true"
+    )
 
 
 def test_ensure_namespaces_skips_cluster_directory(tmp_path: Path) -> None:

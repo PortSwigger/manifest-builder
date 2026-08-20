@@ -341,7 +341,20 @@ def _ensure_namespaces(
         doc = {
             "apiVersion": "v1",
             "kind": "Namespace",
-            "metadata": {"name": ns_name},
+            "metadata": {
+                "name": ns_name,
+                "annotations": {
+                    # Prune the namespace only after everything inside it is gone.
+                    # Crossplane's namespaced managed resources keep in-namespace
+                    # ProviderConfigUsage objects that must be cleaned up on delete; if
+                    # the namespace terminates first those writes are rejected, the
+                    # finalizer never clears, and the namespace wedges in Terminating
+                    # (PLAT-739). PruneLast makes Argo wait for the contents to finalize
+                    # before removing the namespace, and is a no-op when the namespace
+                    # is empty.
+                    "argocd.argoproj.io/sync-options": "PruneLast=true",
+                },
+            },
         }
         out_path = ns_dir / ns_filename
         with open(out_path, "w") as f:
