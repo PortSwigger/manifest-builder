@@ -15,6 +15,7 @@ from manifest_builder.blocks import ConfigBlock
 from manifest_builder.blocks.copy import CopyBlock, CopyConfig
 from manifest_builder.config import (
     ManifestConfig,
+    declared_targets,
     load_configs,
     load_extra_variables,
     load_images,
@@ -950,6 +951,77 @@ def dev_and_prod_config(conf: Path) -> None:
         name = "idcat"
         """,
     )
+
+
+def test_declared_targets_names_the_targets_in_order(tmp_path: Path) -> None:
+    """A caller with somewhere to put each target asks which ones there are."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    dev_and_prod_config(conf)
+
+    assert declared_targets(conf) == ("platform-dev", "platform-prod")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param('[copy.api]\nsource = "api"\n', id="blocks"),
+        pytest.param('version = 1\n[copy.api]\nsource = "api"\n', id="v1"),
+    ],
+)
+def test_declared_targets_is_none_for_a_config_of_blocks(
+    tmp_path: Path, content: str
+) -> None:
+    """A config directory that declares blocks directly has no targets."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(conf, "config.toml", content)
+
+    assert declared_targets(conf) is None
+
+
+def test_declared_targets_is_none_without_a_config_file(tmp_path: Path) -> None:
+    """A directory holding no config file is left for generate() to report on."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+
+    assert declared_targets(conf) is None
+
+
+def test_declared_targets_reads_a_manifest_builder_toml(tmp_path: Path) -> None:
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_toml(
+        conf,
+        "manifest-builder.toml",
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        sections = ["base"]
+        """,
+    )
+
+    assert declared_targets(conf) == ("dev",)
+
+
+def test_declared_targets_rejects_a_target_without_sections(tmp_path: Path) -> None:
+    """The same validation a generate() of that target would fail on."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "dev"
+        """,
+    )
+
+    with pytest.raises(ValueError, match="must set 'sections'"):
+        declared_targets(conf)
 
 
 def test_targets_load_blocks_from_every_section(tmp_path: Path) -> None:

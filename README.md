@@ -137,6 +137,29 @@ Notes:
   the configuration directory and are shared by every target.
 - Only the sections the selected target names are loaded.
 
+### Asking which targets a configuration declares
+
+A caller that generates a configuration into several places has somewhere to put
+each target, and needs to know which targets there are. `declared_targets` is
+that question:
+
+```python
+from manifest_builder import declared_targets
+
+declared_targets(Path("conf"))       # ("platform-dev", "platform-prod")
+```
+
+It returns the names in the order the file declares them, or `None` for a
+configuration directory that declares config blocks directly — which has no
+targets to choose between, and is generated with variables instead — and for one
+holding no config file at all, which `generate()` reports on better than a
+version check would. A malformed target fails here the same way generating it
+would.
+
+Ask rather than reading `config.toml`: a caller that parses the file itself has
+to keep its own idea of what a target is, and can come to a different conclusion
+about a configuration than `generate()` does.
+
 ## Image template variables
 
 Shared container image definitions can be placed in `images.toml` in the
