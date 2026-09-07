@@ -7,7 +7,7 @@ from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from manifest_builder.config import TemplateValue
+from manifest_builder.config import TemplateValue, declared_targets
 from manifest_builder.discovery import ExternalPlugins
 from manifest_builder.result import GenerationResult, KubernetesObjectRef
 
@@ -71,6 +71,7 @@ __all__ = [
     "GenerationResult",
     "KubernetesObjectRef",
     "__version__",
+    "declared_targets",
     "generate",
     "get_version",
 ]

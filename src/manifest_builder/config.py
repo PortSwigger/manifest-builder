@@ -218,6 +218,35 @@ def config_version(data: dict, source_file: Path) -> int:
     return version
 
 
+def declared_targets(config_dir: Path) -> tuple[str, ...] | None:
+    """Return the names of the targets a config directory declares.
+
+    A caller that generates a configuration into several places has somewhere to
+    put each target and needs to know which ones there are. Answering it here
+    keeps the shape of a config file the business of the tool that reads it: a
+    caller asks rather than opening the file, and cannot come to a different
+    conclusion about it than generate() does.
+
+    Returns:
+        The declared target names, in the order the file declares them, or None
+        for a directory that declares config blocks directly, which has no
+        targets to choose between, and for one holding no config file at all,
+        which generate() reports on better than a version check would.
+
+    Raises:
+        ValueError: If the file declares targets and they are malformed, the
+            same way a generate() of one of them would fail.
+    """
+    try:
+        config_file = find_config_file(config_dir)
+    except FileNotFoundError:
+        return None
+    data = load_toml_file(config_file)
+    if config_version(data, config_file) != TARGETS_VERSION:
+        return None
+    return tuple(target.name for target in parse_targets(data, config_file))
+
+
 def parse_targets(data: dict, source_file: Path) -> list[Target]:
     """Parse the ``[[target]]`` entries of a targets-style top-level config."""
     raw_targets = data.get("target")
