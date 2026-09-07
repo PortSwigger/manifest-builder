@@ -146,7 +146,7 @@ that question:
 ```python
 from manifest_builder import declared_targets
 
-declared_targets(Path("conf"))       # ("platform-dev", "platform-prod")
+declared_targets(Path("conf"))  # ("platform-dev", "platform-prod")
 ```
 
 It returns the names in the order the file declares them, or `None` for a
