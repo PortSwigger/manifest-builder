@@ -253,7 +253,10 @@ Notes:
 - A block that writes cluster-scoped objects should pass
   `context.cluster_root` through to `write_documents`, rather than assume
   `cluster/`. In namespace-owner mode it is the owned namespace, which keeps
-  everything the owner generates inside the one directory it owns.
+  everything the owner generates inside the one directory it owns. Only a
+  `CustomResourceDefinition` may be cluster-scoped there — generation fails on
+  anything else, whichever block wrote it, so an owner cannot grant itself
+  authority outside its namespace.
 
 Plugin modules are imported from the configuration directory, so that directory
 is trusted to the same degree as the manifest-builder installation itself.

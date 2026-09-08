@@ -32,11 +32,19 @@ from manifest_builder.git_utils import (
     is_git_dirty,
 )
 from manifest_builder.helmfile import load_helmfile
+from manifest_builder.k8s import is_cluster_scoped, load_crd_scopes
 from manifest_builder.output import dump_yaml, load_all_yaml
 from manifest_builder.result import GenerationResult, KubernetesObjectRef
 
 logger = logging.getLogger(__name__)
 DEPLOY_ID_ANNOTATION = "noa.re/deploy-id"
+
+# The cluster-scoped kinds a namespace owner may generate. A
+# CustomResourceDefinition is the one that grants nobody anything: it registers
+# types, and an owner needs its own to ship custom resources at all. Widening
+# this hands a namespace owner authority outside its namespace, so anything
+# added here wants a reason.
+OWNER_CLUSTER_SCOPED_KINDS = frozenset({"CustomResourceDefinition"})
 
 
 def generate(
@@ -184,6 +192,9 @@ def generate(
 
     written_roots = _output_roots(output, written_paths)
     if namespace is not None:
+        _reject_disallowed_cluster_scoped(
+            written_paths, namespace, OWNER_CLUSTER_SCOPED_KINDS
+        )
         owner_path = _write_namespace_owner(output, namespace)
         written_paths.add(owner_path)
         commit_roots = {namespace}
@@ -415,6 +426,44 @@ def _object_ref_from_doc(doc: Any) -> KubernetesObjectRef | None:
     return KubernetesObjectRef(
         kind=kind, namespace=namespace, name=name, api_version=api_version
     )
+
+
+def _reject_disallowed_cluster_scoped(
+    paths: set[Path], namespace: str, allowed: frozenset[str]
+) -> None:
+    """Fail if a namespace owner generated a cluster-scoped object it may not.
+
+    Reads what was written rather than checking as it is written, because a
+    config block is free to write its files itself and would then never reach
+    the check.
+    """
+    documents: list[tuple[Path, dict]] = []
+    for path in sorted(paths):
+        if path.suffix not in {".yaml", ".yml"} or not path.is_file():
+            continue
+        for doc in load_all_yaml(path.read_text()):
+            if isinstance(doc, dict) and doc.get("kind"):
+                documents.append((path, doc))
+
+    crd_scopes = load_crd_scopes([doc for _, doc in documents])
+    disallowed: list[str] = []
+    for path, doc in documents:
+        kind = doc["kind"]
+        name = doc.get("metadata", {}).get("name", "unknown")
+        # The owner's own Namespace is cluster-scoped but is the namespace it
+        # owns, so generating it claims nothing further.
+        if kind == "Namespace" and name == namespace:
+            continue
+        if kind in allowed or not is_cluster_scoped(doc, crd_scopes):
+            continue
+        disallowed.append(f"{kind}/{name} in {path}")
+
+    if disallowed:
+        details = "\n  ".join(disallowed)
+        raise ValueError(
+            "--namespace mode may only generate "
+            f"{', '.join(sorted(allowed))} outside its namespace, not:\n  {details}"
+        )
 
 
 def _write_namespace_owner(output: Path, namespace: str) -> Path:

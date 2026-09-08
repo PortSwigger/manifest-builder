@@ -1018,6 +1018,174 @@ def test_generate_system_mode_keeps_the_shared_cluster_root(
     assert mock_generate_manifests.call_args.kwargs["cluster_root"] == "cluster"
 
 
+CRD_YAML = """\
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.example.invalid
+spec:
+  group: example.invalid
+  scope: Namespaced
+  names:
+    kind: Widget
+"""
+
+CLUSTER_ROLE_BINDING_YAML = """\
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: team-a-admin
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+"""
+
+
+def _namespace_mode_generating(
+    mock_generate_manifests: mock.Mock, output: Path, filename: str, content: str
+) -> Path:
+    """Make mocked generation write one real file in the team-a output root.
+
+    It has to be written by the mock rather than beforehand: generation clears
+    the owned root first, so a file staged earlier is gone before the check
+    reads it.
+    """
+    written = output / "team-a" / filename
+
+    def generate(**kwargs: object) -> set[Path]:
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_text(content)
+        return {written}
+
+    mock_generate_manifests.side_effect = generate
+    return written
+
+
+@mock.patch("manifest_builder.api.generate_manifests")
+@mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
+@mock.patch("manifest_builder.api.load_images", return_value={})
+@mock.patch("manifest_builder.api.resolve_configs", return_value=["resolved"])
+@mock.patch("manifest_builder.api.load_configs", return_value=["loaded"])
+@mock.patch("manifest_builder.api.load_helmfile", return_value=None)
+def test_generate_namespace_mode_allows_a_custom_resource_definition(
+    mock_load_helmfile: mock.Mock,
+    mock_load_configs: mock.Mock,
+    mock_resolve_configs: mock.Mock,
+    mock_load_images: mock.Mock,
+    mock_load_owned_namespaces: mock.Mock,
+    mock_generate_manifests: mock.Mock,
+    tmp_path: Path,
+) -> None:
+    """An owner may ship the CRD its own custom resources need."""
+    del (
+        mock_load_helmfile,
+        mock_load_configs,
+        mock_resolve_configs,
+        mock_load_images,
+        mock_load_owned_namespaces,
+    )
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    written = _namespace_mode_generating(
+        mock_generate_manifests, output, "crd-widgets.yaml", CRD_YAML
+    )
+
+    result = api_generate(config, output, repo_root=tmp_path, namespace="team-a")
+
+    assert written in result.written_paths
+
+
+@mock.patch("manifest_builder.api.generate_manifests")
+@mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
+@mock.patch("manifest_builder.api.load_images", return_value={})
+@mock.patch("manifest_builder.api.resolve_configs", return_value=["resolved"])
+@mock.patch("manifest_builder.api.load_configs", return_value=["loaded"])
+@mock.patch("manifest_builder.api.load_helmfile", return_value=None)
+def test_generate_namespace_mode_rejects_other_cluster_scoped_kinds(
+    mock_load_helmfile: mock.Mock,
+    mock_load_configs: mock.Mock,
+    mock_resolve_configs: mock.Mock,
+    mock_load_images: mock.Mock,
+    mock_load_owned_namespaces: mock.Mock,
+    mock_generate_manifests: mock.Mock,
+    tmp_path: Path,
+) -> None:
+    """An owner cannot grant itself authority outside its namespace."""
+    del (
+        mock_load_helmfile,
+        mock_load_configs,
+        mock_resolve_configs,
+        mock_load_images,
+        mock_load_owned_namespaces,
+    )
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    _namespace_mode_generating(
+        mock_generate_manifests,
+        output,
+        "clusterrolebinding-team-a-admin.yaml",
+        CLUSTER_ROLE_BINDING_YAML,
+    )
+
+    with pytest.raises(ValueError) as raised:
+        api_generate(config, output, repo_root=tmp_path, namespace="team-a")
+
+    error = str(raised.value)
+    assert "may only generate CustomResourceDefinition" in error
+    assert "ClusterRoleBinding/team-a-admin" in error
+    assert not (output / "owners" / "team-a.toml").exists()
+
+
+@mock.patch("manifest_builder.api.generate_manifests")
+@mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
+@mock.patch("manifest_builder.api.load_images", return_value={})
+@mock.patch("manifest_builder.api.resolve_configs", return_value=["resolved"])
+@mock.patch("manifest_builder.api.load_configs", return_value=["loaded"])
+@mock.patch("manifest_builder.api.load_helmfile", return_value=None)
+def test_generate_namespace_mode_allows_namespaced_custom_resources(
+    mock_load_helmfile: mock.Mock,
+    mock_load_configs: mock.Mock,
+    mock_resolve_configs: mock.Mock,
+    mock_load_images: mock.Mock,
+    mock_load_owned_namespaces: mock.Mock,
+    mock_generate_manifests: mock.Mock,
+    tmp_path: Path,
+) -> None:
+    """The check reads scope, so a namespaced custom resource is untouched.
+
+    A CRD declaring its kind Namespaced sits beside instances of that kind,
+    which is the shape the check must not mistake for cluster-scoped output.
+    """
+    del (
+        mock_load_helmfile,
+        mock_load_configs,
+        mock_resolve_configs,
+        mock_load_images,
+        mock_load_owned_namespaces,
+    )
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    written = _namespace_mode_generating(
+        mock_generate_manifests,
+        output,
+        "widgets.yaml",
+        CRD_YAML
+        + "---\n"
+        + "apiVersion: example.invalid/v1\nkind: Widget\n"
+        + "metadata:\n  name: a-widget\n  namespace: team-a\n",
+    )
+
+    result = api_generate(config, output, repo_root=tmp_path, namespace="team-a")
+
+    assert written in result.written_paths
+
+
 @mock.patch("manifest_builder.api.create_manifest_commit")
 @mock.patch("manifest_builder.api.get_git_tracked_remote", return_value="config.git")
 @mock.patch("manifest_builder.api.get_git_commit_subject", return_value="Config change")
