@@ -550,6 +550,7 @@ def test_generate_accepts_config_and_output_paths(
         owned_namespaces={"owned"},
         managed_namespaces=None,
         cleanup=False,
+        cluster_root="cluster",
     )
 
 
@@ -712,6 +713,7 @@ def test_generate_namespace_mode_writes_owner_file(
         owned_namespaces=set(),
         managed_namespaces={"team-a"},
         cleanup=False,
+        cluster_root="team-a",
     )
 
 
@@ -948,7 +950,7 @@ image = "registry.example.com/team-a:1.0"
 @mock.patch("manifest_builder.api.resolve_configs", return_value=["resolved"])
 @mock.patch("manifest_builder.api.load_configs", return_value=["loaded"])
 @mock.patch("manifest_builder.api.load_helmfile", return_value=None)
-def test_generate_namespace_mode_rejects_cluster_output(
+def test_generate_namespace_mode_keeps_cluster_output_in_the_owned_root(
     mock_load_helmfile: mock.Mock,
     mock_load_configs: mock.Mock,
     mock_resolve_configs: mock.Mock,
@@ -957,7 +959,47 @@ def test_generate_namespace_mode_rejects_cluster_output(
     mock_generate_manifests: mock.Mock,
     tmp_path: Path,
 ) -> None:
-    """Namespace mode fails when any generated file lands in cluster/."""
+    """A namespace owner's cluster-scoped output goes in the root it owns."""
+    del (
+        mock_load_helmfile,
+        mock_load_configs,
+        mock_resolve_configs,
+        mock_load_images,
+        mock_load_owned_namespaces,
+    )
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    mock_generate_manifests.return_value = {
+        output / "team-a" / "customresourcedefinition-widgets.yaml"
+    }
+
+    result = api_generate(config, output, repo_root=tmp_path, namespace="team-a")
+
+    assert mock_generate_manifests.call_args.kwargs["cluster_root"] == "team-a"
+    assert output / "team-a" / "customresourcedefinition-widgets.yaml" in (
+        result.written_paths
+    )
+    assert (output / "owners" / "team-a.toml").exists()
+
+
+@mock.patch("manifest_builder.api.generate_manifests")
+@mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
+@mock.patch("manifest_builder.api.load_images", return_value={})
+@mock.patch("manifest_builder.api.resolve_configs", return_value=["resolved"])
+@mock.patch("manifest_builder.api.load_configs", return_value=["loaded"])
+@mock.patch("manifest_builder.api.load_helmfile", return_value=None)
+def test_generate_system_mode_keeps_the_shared_cluster_root(
+    mock_load_helmfile: mock.Mock,
+    mock_load_configs: mock.Mock,
+    mock_resolve_configs: mock.Mock,
+    mock_load_images: mock.Mock,
+    mock_load_owned_namespaces: mock.Mock,
+    mock_generate_manifests: mock.Mock,
+    tmp_path: Path,
+) -> None:
+    """Without an owned namespace, cluster-scoped output stays in cluster/."""
     del (
         mock_load_helmfile,
         mock_load_configs,
@@ -971,15 +1013,9 @@ def test_generate_namespace_mode_rejects_cluster_output(
     output.mkdir()
     mock_generate_manifests.return_value = {output / "cluster" / "clusterrole-app.yaml"}
 
-    try:
-        api_generate(config, output, repo_root=tmp_path, namespace="team-a")
-    except ValueError as e:
-        error = str(e)
-    else:
-        raise AssertionError("generate() should reject cluster output")
+    api_generate(config, output, repo_root=tmp_path)
 
-    assert "--namespace mode cannot generate cluster-scoped manifests" in error
-    assert not (output / "owners" / "team-a.toml").exists()
+    assert mock_generate_manifests.call_args.kwargs["cluster_root"] == "cluster"
 
 
 @mock.patch("manifest_builder.api.create_manifest_commit")

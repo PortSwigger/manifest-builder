@@ -36,6 +36,10 @@ class GenerationContext:
     verbose: bool = False
     images: dict[str, str] | None = None
     cache_stats: ChartCacheStats | None = None
+    #: Output root for cluster-scoped objects. A namespace owner sets it to
+    #: its own namespace, so everything it generates stays in the one
+    #: directory it owns.
+    cluster_root: str = "cluster"
 
 
 class ConfigBlock[ConfigT: ManifestConfig](ABC):

@@ -71,8 +71,8 @@ def generate(
             relative to ``repo_root`` if it is not absolute.
         namespace: Optional namespace-owner mode. When set, config entries may
             omit their ``namespace`` field, an owner declaration is written to
-            ``output/owners/<namespace>.toml``, and cluster-scoped output is
-            rejected.
+            ``output/owners/<namespace>.toml``, and cluster-scoped output
+            lands in that same root rather than ``output/cluster/``.
         image: Optional image override for namespace-owner mode. When set,
             config blocks that support image overrides use this image and may
             reject an ``image`` field in the config file.
@@ -179,17 +179,11 @@ def generate(
         owned_namespaces=owned_namespaces,
         managed_namespaces={namespace} if namespace is not None else None,
         cleanup=False,
+        cluster_root=namespace if namespace is not None else "cluster",
     )
 
     written_roots = _output_roots(output, written_paths)
     if namespace is not None:
-        cluster_paths = _cluster_output_paths(output, written_paths)
-        if cluster_paths:
-            details = "\n  ".join(str(path) for path in cluster_paths)
-            raise ValueError(
-                "--namespace mode cannot generate cluster-scoped manifests:\n  "
-                f"{details}"
-            )
         owner_path = _write_namespace_owner(output, namespace)
         written_paths.add(owner_path)
         commit_roots = {namespace}
@@ -421,19 +415,6 @@ def _object_ref_from_doc(doc: Any) -> KubernetesObjectRef | None:
     return KubernetesObjectRef(
         kind=kind, namespace=namespace, name=name, api_version=api_version
     )
-
-
-def _cluster_output_paths(output: Path, paths: set[Path]) -> list[Path]:
-    """Return generated paths that landed in the output cluster directory."""
-    cluster_paths: list[Path] = []
-    for path in paths:
-        try:
-            parts = path.relative_to(output).parts
-        except ValueError:
-            continue
-        if len(parts) > 1 and parts[0] == "cluster":
-            cluster_paths.append(path)
-    return sorted(cluster_paths)
 
 
 def _write_namespace_owner(output: Path, namespace: str) -> Path:

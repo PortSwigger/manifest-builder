@@ -92,6 +92,7 @@ def write_documents(
     namespace: str | None,
     app_name: str | None = None,
     crd_scopes: dict[tuple[str, str], str] | None = None,
+    cluster_root: str = "cluster",
 ) -> set[Path]:
     """Write each Kubernetes document to its own file under ``output_dir``.
 
@@ -103,6 +104,7 @@ def write_documents(
         crd_scopes: Scopes of custom resources, as returned by
             :func:`~manifest_builder.k8s.load_crd_scopes`. Read from
             ``documents`` when not given.
+        cluster_root: Output root for cluster-scoped objects.
 
     Returns:
         Set of paths written
@@ -124,7 +126,7 @@ def write_documents(
             continue
 
         if is_cluster_scoped(doc, crd_scopes):
-            subdir = "cluster"
+            subdir = cluster_root
         else:
             subdir = doc.get("metadata", {}).get("namespace") or namespace
             if subdir is None:
@@ -193,12 +195,13 @@ def write_manifests(
     output_dir: Path,
     namespace: str,
     app_name: str | None = None,
+    cluster_root: str = "cluster",
 ) -> set[Path]:
     """
     Split YAML content into individual documents and write each to a separate file.
 
     Files are named following the pattern: kind-name.yaml, written into
-    output_dir/<namespace>/ for namespaced resources or output_dir/cluster/
+    output_dir/<namespace>/ for namespaced resources or output_dir/<cluster_root>/
     for cluster-scoped resources, where a CustomResourceDefinition among the
     documents decides the scope of the kinds it defines. ``kind: List``
     documents are expanded so each item they carry gets its own file, falling
@@ -209,6 +212,7 @@ def write_manifests(
         output_dir: Base output directory
         namespace: Kubernetes namespace (used for namespaced resources)
         app_name: If provided, written as a comment at the top of each file
+        cluster_root: Output root for cluster-scoped objects
 
     Returns:
         Set of paths written
@@ -251,4 +255,6 @@ def write_manifests(
         ):
             doc.setdefault("metadata", {})["namespace"] = list_namespace or namespace
 
-    return write_documents(documents, output_dir, namespace, app_name, crd_scopes)
+    return write_documents(
+        documents, output_dir, namespace, app_name, crd_scopes, cluster_root
+    )

@@ -99,6 +99,7 @@ def generate_manifests(
     owned_namespaces: set[str] | None = None,
     managed_namespaces: set[str] | None = None,
     cleanup: bool = True,
+    cluster_root: str = "cluster",
 ) -> set[Path]:
     """
     Generate manifests for all configured apps.
@@ -116,6 +117,7 @@ def generate_manifests(
         managed_namespaces: If set, cleanup and automatic Namespace creation are
             limited to these namespace directories.
         cleanup: If True, remove stale YAML files after generation.
+        cluster_root: Output root for cluster-scoped objects.
 
     Returns:
         Set of paths that were written
@@ -159,6 +161,7 @@ def generate_manifests(
         verbose=verbose,
         images=images,
         cache_stats=cache_stats,
+        cluster_root=cluster_root,
     )
 
     def generate_job(job: _GenerationJob) -> set[Path]:

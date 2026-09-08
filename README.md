@@ -250,6 +250,10 @@ Notes:
   is an error.
 - Bundled templates should be resolved relative to the plugin module, for
   example `Path(__file__).parent / "templates" / "public_repo"`.
+- A block that writes cluster-scoped objects should pass
+  `context.cluster_root` through to `write_documents`, rather than assume
+  `cluster/`. In namespace-owner mode it is the owned namespace, which keeps
+  everything the owner generates inside the one directory it owns.
 
 Plugin modules are imported from the configuration directory, so that directory
 is trusted to the same degree as the manifest-builder installation itself.

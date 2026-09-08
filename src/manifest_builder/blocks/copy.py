@@ -101,7 +101,12 @@ class CopyBlock(ConfigBlock[CopyConfig]):
         config: CopyConfig,
         context: GenerationContext,
     ) -> set[Path]:
-        return generate_copy(config, context.output_dir, images=context.images)
+        return generate_copy(
+            config,
+            context.output_dir,
+            images=context.images,
+            cluster_root=context.cluster_root,
+        )
 
 
 def _parse_copy_config(
@@ -159,6 +164,7 @@ def generate_copy(
     config: CopyConfig,
     output_dir: Path,
     images: dict[str, str] | None = None,
+    cluster_root: str = "cluster",
 ) -> set[Path]:
     """Generate manifests for a copy app by copying existing manifests.
 
@@ -244,4 +250,6 @@ def generate_copy(
                         {"name": cm_name, "configMap": {"name": cm_name}}
                     )
 
-    return write_documents(docs, output_dir, config.namespace, config.name, crd_scopes)
+    return write_documents(
+        docs, output_dir, config.namespace, config.name, crd_scopes, cluster_root
+    )

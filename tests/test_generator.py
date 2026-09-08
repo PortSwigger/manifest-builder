@@ -65,6 +65,25 @@ def test_write_manifests_cluster_scoped_resource(tmp_path: Path) -> None:
     assert path.exists()
 
 
+def test_write_manifests_cluster_root_redirects_cluster_scoped_resources(
+    tmp_path: Path,
+) -> None:
+    paths = write_manifests(
+        CLUSTER_SCOPED_YAML, tmp_path, "default", cluster_root="team-a"
+    )
+
+    assert paths == {tmp_path / "team-a" / "clusterrole-my-role.yaml"}
+
+
+def test_write_manifests_cluster_root_leaves_namespaced_resources_alone(
+    tmp_path: Path,
+) -> None:
+    paths = write_manifests(NAMESPACED_YAML, tmp_path, "default", cluster_root="team-a")
+
+    (path,) = paths
+    assert path.parent.name == "production"
+
+
 def test_write_manifests_crossplane_cluster_provider_config_is_cluster_scoped(
     tmp_path: Path,
 ) -> None:
