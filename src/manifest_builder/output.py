@@ -9,6 +9,7 @@ or :func:`write_manifests`, which route each object to the namespace or
 
 import io
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +23,24 @@ YAML_LOADER: type[yaml.SafeLoader] = getattr(yaml, "CSafeLoader", yaml.SafeLoade
 YAML_DUMPER: type[yaml.Dumper] = getattr(yaml, "CDumper", yaml.Dumper)
 
 
+NUMBER_LIKE = re.compile(r"[-+]?[0-9][0-9_]*(\.[0-9_]*)?([eE][-+]?[0-9]+)?")
+
+
 def _literal_str_representer(dumper: yaml.Dumper, data: str) -> yaml.Node:
-    """Represent multi-line strings using literal block scalar (|-) syntax."""
+    """Represent multi-line strings using literal block scalar (|-) syntax.
+
+    A string is quoted whenever some other parser could read the bare form as
+    a number. PyYAML omits the quotes when *its own* resolver reads the bare
+    form back as a string, which is a weaker guarantee than these manifests
+    need: go-yaml, which Kubernetes parses with, resolves an AWS account id
+    like 032445865269 as a float, because the 8 and 9 rule out octal and its
+    float parser accepts the leading zero. The API server then rejects it
+    against a string-typed field.
+    """
     if "\n" in data:
         return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    if NUMBER_LIKE.fullmatch(data):
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="'")
     return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
 
