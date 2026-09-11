@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -313,30 +314,40 @@ def _restore_deploy_id_only_changes(paths: set[Path]) -> None:
             path.write_bytes(head_content)
 
 
+# metadata.annotations sits at two spaces and its keys at four, so anchoring
+# the indent keeps a spec field of the same name from being masked out.
+_DEPLOY_ID_ANNOTATION_LINE = re.compile(
+    rf"^    {re.escape(DEPLOY_ID_ANNOTATION)}: .*\n",
+    re.MULTILINE,
+)
+# An annotations key with nothing at four spaces under it, once the deploy-id
+# is gone, along with the empty mapping a chart can emit where generation
+# emits no annotations at all.
+_ANNOTATIONS_WITHOUT_KEYS = re.compile(
+    r"^  annotations:(?: null| \{\})?\n(?!    )",
+    re.MULTILINE,
+)
+
+
 def _manifests_equal_ignoring_deploy_id(left: str, right: str) -> bool:
-    """Return whether two manifest streams match aside from deploy-id annotations."""
-    return _without_deploy_id(load_all_yaml(left)) == _without_deploy_id(
-        load_all_yaml(right)
-    )
+    """Return whether two manifest streams match aside from deploy-id annotations.
+
+    Compared as text. Parsing both sides and comparing the documents would
+    treat a change the API server cares about as no change at all, because
+    PyYAML reads an AWS account id like 032445865269 back as a string whether
+    it is quoted or not: a generation that fixed the quoting would be restored
+    to the unquoted version it had just replaced, on every run.
+
+    Generation writes no deploy-id, so the annotation is stripped rather than
+    normalised, and with it the annotations key when nothing else is under it.
+    The result is not valid YAML; it only has to be stable on both sides.
+    """
+    return _without_deploy_id_text(left) == _without_deploy_id_text(right)
 
 
-def _without_deploy_id(documents: list[Any]) -> list[Any]:
-    for doc in documents:
-        if not isinstance(doc, dict) or not doc.get("kind"):
-            continue
-        metadata = doc.get("metadata")
-        if not isinstance(metadata, dict):
-            continue
-        annotations = metadata.get("annotations")
-        if annotations is None:
-            metadata.pop("annotations", None)
-            continue
-        if not isinstance(annotations, dict):
-            continue
-        annotations.pop(DEPLOY_ID_ANNOTATION, None)
-        if not annotations:
-            del metadata["annotations"]
-    return documents
+def _without_deploy_id_text(manifest: str) -> str:
+    masked = _DEPLOY_ID_ANNOTATION_LINE.sub("", manifest)
+    return _ANNOTATIONS_WITHOUT_KEYS.sub("", masked)
 
 
 def _annotate_manifest_files(paths: set[Path], deploy_id: str) -> None:
