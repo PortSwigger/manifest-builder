@@ -316,16 +316,17 @@ def _restore_deploy_id_only_changes(paths: set[Path]) -> None:
 
 # metadata.annotations sits at two spaces and its keys at four, so anchoring
 # the indent keeps a spec field of the same name from being masked out.
-_SOLE_DEPLOY_ID_ANNOTATION = re.compile(
-    rf"^  annotations:\n    {re.escape(DEPLOY_ID_ANNOTATION)}: .*\n",
-    re.MULTILINE,
-)
 _DEPLOY_ID_ANNOTATION_LINE = re.compile(
     rf"^    {re.escape(DEPLOY_ID_ANNOTATION)}: .*\n",
     re.MULTILINE,
 )
-# A chart can emit an empty annotations mapping where generation emits none.
-_EMPTY_ANNOTATIONS = re.compile(r"^  annotations:(?: null| \{\})\n", re.MULTILINE)
+# An annotations key with nothing at four spaces under it, once the deploy-id
+# is gone, along with the empty mapping a chart can emit where generation
+# emits no annotations at all.
+_ANNOTATIONS_WITHOUT_KEYS = re.compile(
+    r"^  annotations:(?: null| \{\})?\n(?!    )",
+    re.MULTILINE,
+)
 
 
 def _manifests_equal_ignoring_deploy_id(left: str, right: str) -> bool:
@@ -345,9 +346,8 @@ def _manifests_equal_ignoring_deploy_id(left: str, right: str) -> bool:
 
 
 def _without_deploy_id_text(manifest: str) -> str:
-    masked = _SOLE_DEPLOY_ID_ANNOTATION.sub("", manifest)
-    masked = _EMPTY_ANNOTATIONS.sub("", masked)
-    return _DEPLOY_ID_ANNOTATION_LINE.sub("", masked)
+    masked = _DEPLOY_ID_ANNOTATION_LINE.sub("", manifest)
+    return _ANNOTATIONS_WITHOUT_KEYS.sub("", masked)
 
 
 def _annotate_manifest_files(paths: set[Path], deploy_id: str) -> None:

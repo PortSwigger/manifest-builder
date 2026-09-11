@@ -1406,3 +1406,45 @@ spec:
 
     assert result.created_or_modified != set()
     assert "'032445865269'" in manifest.read_text()
+
+
+def test_generate_ignores_deploy_id_before_another_annotation(tmp_path: Path) -> None:
+    """The annotations key survives masking wherever the deploy id sits under it."""
+    output = tmp_path / "output"
+    output.mkdir()
+    init_test_repo(output)
+    manifest = output / "idcat" / "configmap-settings.yaml"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        """\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: idcat
+  annotations:
+    noa.re/deploy-id: old-deploy-id
+    example.com/kept: value
+data:
+  key: value
+"""
+    )
+    _commit_all(output, b"generated manifests")
+    manifest.write_text(
+        """\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: idcat
+  annotations:
+    example.com/kept: value
+data:
+  key: value
+"""
+    )
+
+    result = _collect_generation_result(output, {manifest}, "a" * 40, {"idcat"})
+
+    assert result.created_or_modified == set()
+    assert get_git_manifest_changes(output) == GitManifestChanges()
