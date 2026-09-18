@@ -1,6 +1,6 @@
 # Manifest Builder
 
-Generate materialized Kubernetes manifests from various types of configuration
+Generate materialized Kubernetes manifests from various types of configuration.
 
 ## Installation
 
