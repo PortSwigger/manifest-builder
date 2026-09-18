@@ -10,6 +10,21 @@ To install or upgrade to the latest version:
 uv pip install --upgrade manifest-builder
 ```
 
+## Large CRDs and Argo CD
+
+Generated CustomResourceDefinitions automatically receive
+`argocd.argoproj.io/sync-options: ServerSideApply=true` when their estimated
+client-side apply annotation usage reaches 240 KiB (245760 bytes). This applies
+to both rendered charts and copied manifests. Other sync options are preserved;
+an existing `ServerSideApply=false` is replaced for large CRDs.
+
+Client-side apply stores the resource as JSON in the
+`kubectl.kubernetes.io/last-applied-configuration` annotation. Kubernetes limits
+the combined annotation keys and values to 256 KiB (262144 bytes), so the check
+counts both the serialized resource and existing annotations, with conservative
+JSON escaping. The 16 KiB margin allows for metadata added during deployment.
+YAML file size alone is not a reliable measure of this limit.
+
 ## Development
 
 This project is using [uv](https://docs.astral.sh/uv/) for development. To set up your dev environment,

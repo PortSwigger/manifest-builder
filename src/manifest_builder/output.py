@@ -8,6 +8,7 @@ or :func:`write_manifests`, which route each object to the namespace or
 """
 
 import io
+import json
 import logging
 import re
 from pathlib import Path
@@ -21,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 YAML_LOADER: type[yaml.SafeLoader] = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 YAML_DUMPER: type[yaml.Dumper] = getattr(yaml, "CDumper", yaml.Dumper)
+
+# Leave 16 KiB for metadata added by Argo CD and serialization differences.
+CRD_CLIENT_SIDE_APPLY_BUDGET = 240 * 1024
+LAST_APPLIED_ANNOTATION = "kubectl.kubernetes.io/last-applied-configuration"
+ARGO_SYNC_OPTIONS_ANNOTATION = "argocd.argoproj.io/sync-options"
 
 
 NUMBER_LIKE = re.compile(r"[-+]?[0-9][0-9_]*(\.[0-9_]*)?([eE][-+]?[0-9]+)?")
@@ -101,6 +107,53 @@ def strip_helm_metadata(doc: dict) -> dict:
     return doc
 
 
+def _annotate_large_crd(doc: dict) -> None:
+    """Avoid overflowing the 256 KiB annotation limit with client-side apply."""
+    if (
+        doc.get("kind") != "CustomResourceDefinition"
+        or doc.get("apiVersion", "").partition("/")[0] != "apiextensions.k8s.io"
+    ):
+        return
+
+    metadata = doc.get("metadata") or {}
+    annotations = metadata.get("annotations") or {}
+    # kubectl replaces, rather than embeds, any previous last-applied value.
+    saved_annotations = {
+        key: value
+        for key, value in annotations.items()
+        if key != LAST_APPLIED_ANNOTATION
+    }
+    saved_metadata = {**metadata, "annotations": saved_annotations}
+    configuration = json.dumps(
+        {**doc, "metadata": saved_metadata}, separators=(",", ":")
+    )
+    # Go's JSON encoder escapes HTML characters. ASCII escaping also gives a
+    # conservative estimate for Unicode, whose UTF-8 representation is shorter.
+    for char in "<>&":
+        configuration = configuration.replace(char, f"\\u{ord(char):04x}")
+    annotation_size = (
+        len(configuration.encode("utf-8"))
+        + 1  # trailing newline in kubectl's serialized configuration
+        + len(LAST_APPLIED_ANNOTATION)
+        + sum(
+            len(key.encode("utf-8")) + len(value.encode("utf-8"))
+            for key, value in saved_annotations.items()
+        )
+    )
+    if annotation_size < CRD_CLIENT_SIDE_APPLY_BUDGET:
+        return
+
+    options = [
+        option.strip()
+        for option in annotations.get(ARGO_SYNC_OPTIONS_ANNOTATION, "").split(",")
+        if option.strip()
+        and option.strip().partition("=")[0].strip() != "ServerSideApply"
+    ]
+    options.append("ServerSideApply=true")
+    annotations[ARGO_SYNC_OPTIONS_ANNOTATION] = ",".join(options)
+    doc.setdefault("metadata", {})["annotations"] = annotations
+
+
 def write_documents(
     documents: list[dict],
     output_dir: Path,
@@ -137,6 +190,8 @@ def write_documents(
 
         if not kind or not name:
             continue
+
+        _annotate_large_crd(doc)
 
         if is_cluster_scoped(doc, crd_scopes):
             subdir = "cluster"
