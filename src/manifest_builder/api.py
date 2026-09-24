@@ -275,29 +275,12 @@ def _collect_generation_result(
     if managed_roots is not None:
         changes = _filter_manifest_changes(output, changes, managed_roots)
 
-    manifest_ids = _manifest_ids_from_paths(changes.added_or_modified)
-    removed = _object_refs_from_deleted_paths(changes.deleted)
     return GenerationResult(
         written_paths=written_paths,
         created_or_modified=_object_refs_from_paths(changes.added_or_modified),
-        removed=removed,
-        manifest_ids=manifest_ids,
-        deploy_id=_make_deploy_id(manifest_ids, removed),
+        removed=_object_refs_from_deleted_paths(changes.deleted),
+        manifest_ids=_manifest_ids_from_paths(changes.added_or_modified),
     )
-
-
-def _make_deploy_id(
-    manifest_ids: Mapping[KubernetesObjectRef, str],
-    removed: set[KubernetesObjectRef],
-) -> str:
-    """Return a 64-bit id for the whole change as 16 hex characters."""
-    changes = [[*_ref_fields(ref), manifest_ids[ref]] for ref in sorted(manifest_ids)]
-    changes += [[*_ref_fields(ref), None] for ref in sorted(removed)]
-    return hashlib.sha256(json.dumps(changes).encode()).hexdigest()[:16]
-
-
-def _ref_fields(ref: KubernetesObjectRef) -> list[str | None]:
-    return [ref.api_version, ref.kind, ref.namespace, ref.name]
 
 
 def _manifest_id(doc: dict) -> str:

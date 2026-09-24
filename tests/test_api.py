@@ -261,7 +261,6 @@ metadata:
     }
     assert result.created_or_modified == set(result.manifest_ids)
     assert result.removed == {KubernetesObjectRef("ConfigMap", "idcat", "old", "v1")}
-    assert result.deploy_id is not None
 
 
 def test_generate_gives_objects_with_different_content_different_ids(
@@ -302,7 +301,6 @@ def test_generate_output_does_not_depend_on_the_builder_version(
     first, second = tmp_path / "1.0.0", tmp_path / "2.0.0"
     assert _manifest_bytes_in(first) == _manifest_bytes_in(second)
     assert results["1.0.0"].manifest_ids == results["2.0.0"].manifest_ids
-    assert results["1.0.0"].deploy_id == results["2.0.0"].deploy_id
 
 
 def test_generate_only_changes_the_objects_whose_content_changed(

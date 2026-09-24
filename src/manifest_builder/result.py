@@ -36,8 +36,3 @@ class GenerationResult:
     A manifest-id is a hash of the object's generated content, so a live object
     carrying it has that content.
     """
-    deploy_id: str | None = None
-    """An id for the whole change, derived from ``manifest_ids`` and ``removed``.
-
-    Set when the output is a git checkout, which is what the changes are read from.
-    """
