@@ -61,6 +61,13 @@ with the `[variables]` table in `config.toml` just like values loaded with
 generate(Path("conf"), Path("output"), vars={"domain": "example.com"})
 ```
 
+Every generated object carries a `noa.re/manifest-id` annotation: a hash of the
+object's generated content, and of nothing else. Generating the same objects
+writes the same bytes whichever manifest-builder version does it, and an object
+that did not change is left exactly as it was. When the output is a git
+checkout, the result's `manifest_ids` gives the manifest-id of each created or
+modified object, so a caller can wait for the cluster to hold that content.
+
 `manifest_builder.get_version()` returns the version string of the running
 manifest-builder, for calling code that wants to log which version it used:
 
