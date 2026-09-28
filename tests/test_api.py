@@ -22,11 +22,10 @@ from manifest_builder import (
     get_version,
 )
 from manifest_builder.api import (
-    DEPLOY_ID_ANNOTATION,
+    MANIFEST_ID_ANNOTATION,
     _collect_generation_result,
     _load_api_variables,
     _load_system_owner_roots,
-    _make_deploy_id,
     _object_ref_from_doc,
 )
 from manifest_builder.api import (
@@ -186,25 +185,49 @@ def _commit_all(path: Path, message: bytes = b"commit") -> bytes:
     )
 
 
-def test_generate_reports_changed_objects_and_adds_deploy_id(
+def _write_demo_config(
+    config: Path, image: str = "registry.example.com/idcat:1.0"
+) -> None:
+    (config / "config.toml").write_text(
+        f"""\
+[[demo]]
+namespace = "idcat"
+image = "{image}"
+"""
+    )
+    write_demo_plugin(config)
+
+
+def _manifest_ids_in(output: Path) -> dict[str, str]:
+    """Return each manifest's manifest-id, keyed by its path below ``output``."""
+    ids = {}
+    for path in sorted(output.rglob("*.yaml")):
+        doc = yaml.safe_load(path.read_text())
+        ids[str(path.relative_to(output))] = doc["metadata"]["annotations"][
+            MANIFEST_ID_ANNOTATION
+        ]
+    return ids
+
+
+def _manifest_bytes_in(output: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(output)): path.read_bytes()
+        for path in sorted(output.rglob("*.yaml"))
+    }
+
+
+def test_generate_reports_changed_objects_and_their_manifest_ids(
     tmp_path: Path,
 ) -> None:
-    """Generation result lists git changes and annotates changed objects."""
+    """Generation result lists git changes and the manifest-id of each change."""
     config = tmp_path / "config"
     output = tmp_path / "output"
     config.mkdir()
     output.mkdir()
     init_test_repo(config)
     init_test_repo(output)
-    (config / "config.toml").write_text(
-        """\
-[[demo]]
-namespace = "idcat"
-image = "registry.example.com/idcat:1.0"
-"""
-    )
-    write_demo_plugin(config)
-    config_commit = _commit_all(config).decode("ascii")
+    _write_demo_config(config)
+    _commit_all(config)
 
     stale = output / "idcat" / "configmap-old.yaml"
     stale.parent.mkdir()
@@ -224,20 +247,149 @@ metadata:
 
     result = api_generate(config, output, repo_root=tmp_path)
 
-    deploy_id = _make_deploy_id(__version__, config_commit)
-    assert result.deploy_id == deploy_id
-    assert result.created_or_modified == {
-        KubernetesObjectRef("Deployment", "idcat", "idcat", "apps/v1"),
-        KubernetesObjectRef("Namespace", None, "idcat", "v1"),
-        KubernetesObjectRef("Service", "idcat", "idcat", "v1"),
+    ids = _manifest_ids_in(output)
+    assert result.manifest_ids == {
+        KubernetesObjectRef("Deployment", "idcat", "idcat", "apps/v1"): ids[
+            "idcat/deployment-idcat.yaml"
+        ],
+        KubernetesObjectRef("Namespace", None, "idcat", "v1"): ids[
+            "idcat/namespace-idcat.yaml"
+        ],
+        KubernetesObjectRef("Service", "idcat", "idcat", "v1"): ids[
+            "idcat/service-idcat.yaml"
+        ],
     }
+    assert result.created_or_modified == set(result.manifest_ids)
     assert result.removed == {KubernetesObjectRef("ConfigMap", "idcat", "old", "v1")}
 
-    for path in result.written_paths:
-        if path.suffix != ".yaml":
-            continue
-        doc = yaml.safe_load(path.read_text())
-        assert doc["metadata"]["annotations"][DEPLOY_ID_ANNOTATION] == deploy_id
+
+def test_generate_gives_objects_with_different_content_different_ids(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    _write_demo_config(config)
+
+    api_generate(config, output, repo_root=tmp_path)
+
+    ids = _manifest_ids_in(output)
+    assert len(set(ids.values())) == len(ids)
+    assert all(len(value) == 16 for value in ids.values())
+
+
+def test_generate_output_does_not_depend_on_the_builder_version(
+    tmp_path: Path,
+) -> None:
+    """Two builder versions producing the same objects write the same bytes."""
+    config = tmp_path / "config"
+    config.mkdir()
+    init_test_repo(config)
+    _write_demo_config(config)
+    _commit_all(config)
+
+    results = {}
+    for version in ("1.0.0", "2.0.0"):
+        output = tmp_path / version
+        output.mkdir()
+        init_test_repo(output)
+        (output / "README.md").write_text("manifests\n")
+        _commit_all(output)
+        with mock.patch("manifest_builder.api.__version__", version):
+            results[version] = api_generate(config, output, repo_root=tmp_path)
+
+    first, second = tmp_path / "1.0.0", tmp_path / "2.0.0"
+    assert _manifest_bytes_in(first) == _manifest_bytes_in(second)
+    assert results["1.0.0"].manifest_ids == results["2.0.0"].manifest_ids
+
+
+def test_generate_only_changes_the_objects_whose_content_changed(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    init_test_repo(config)
+    init_test_repo(output)
+    _write_demo_config(config)
+    _commit_all(config)
+    api_generate(config, output, repo_root=tmp_path)
+    _commit_all(output)
+    before = _manifest_ids_in(output)
+
+    _write_demo_config(config, image="registry.example.com/idcat:2.0")
+    _commit_all(config)
+    result = api_generate(config, output, repo_root=tmp_path)
+
+    after = _manifest_ids_in(output)
+    deployment = KubernetesObjectRef("Deployment", "idcat", "idcat", "apps/v1")
+    assert result.created_or_modified == {deployment}
+    assert result.manifest_ids == {deployment: after["idcat/deployment-idcat.yaml"]}
+    assert after["idcat/deployment-idcat.yaml"] != before["idcat/deployment-idcat.yaml"]
+    assert {path: before[path] for path in before if "deployment" not in path} == {
+        path: after[path] for path in after if "deployment" not in path
+    }
+
+
+def test_regenerating_unchanged_config_changes_nothing(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    init_test_repo(config)
+    init_test_repo(output)
+    _write_demo_config(config)
+    _commit_all(config)
+    api_generate(config, output, repo_root=tmp_path)
+    _commit_all(output)
+
+    (config / "unrelated.txt").write_text("a config commit that changes no object\n")
+    _commit_all(config)
+    result = api_generate(config, output, repo_root=tmp_path)
+
+    assert result.created_or_modified == set()
+    assert result.manifest_ids == {}
+    assert get_git_manifest_changes(output) == GitManifestChanges()
+
+
+def test_generate_replaces_an_old_deploy_id_with_a_manifest_id(
+    tmp_path: Path,
+) -> None:
+    """Output from a builder that stamped deploy-ids is rewritten, not restored."""
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    init_test_repo(config)
+    init_test_repo(output)
+    _write_demo_config(config)
+    _commit_all(config)
+    service = output / "idcat" / "service-idcat.yaml"
+    service.parent.mkdir()
+    service.write_text(
+        """\
+# Source: idcat
+apiVersion: v1
+kind: Service
+metadata:
+  name: idcat
+  namespace: idcat
+  annotations:
+    noa.re/deploy-id: 8c4049b059c50f2b
+spec: {}
+"""
+    )
+    _commit_all(output)
+
+    result = api_generate(config, output, repo_root=tmp_path)
+
+    annotations = yaml.safe_load(service.read_text())["metadata"]["annotations"]
+    assert "noa.re/deploy-id" not in annotations
+    assert MANIFEST_ID_ANNOTATION in annotations
+    assert KubernetesObjectRef("Service", "idcat", "idcat", "v1") in (
+        result.created_or_modified
+    )
 
 
 def test_generate_reports_manifests_below_a_new_directory(tmp_path: Path) -> None:
@@ -271,204 +423,21 @@ kind: Deployment
 metadata:
   name: blackbox-exporter
   namespace: observability
-"""
-    )
-    config_commit = "a" * 40
-
-    result = _collect_generation_result(
-        output, {manifest}, config_commit, {"idcat", "blackbox-exporter"}
-    )
-
-    assert result.created_or_modified == {
-        KubernetesObjectRef(
-            "Deployment", "observability", "blackbox-exporter", "apps/v1"
-        )
-    }
-    assert result.removed == set()
-    doc = yaml.safe_load(manifest.read_text())
-    assert doc["metadata"]["annotations"][DEPLOY_ID_ANNOTATION] == result.deploy_id
-
-
-def test_generate_ignores_deploy_id_only_manifest_changes(tmp_path: Path) -> None:
-    """A new deploy id alone should not make otherwise unchanged objects modified."""
-    output = tmp_path / "output"
-    output.mkdir()
-    init_test_repo(output)
-    manifest = output / "idcat" / "configmap-settings.yaml"
-    manifest.parent.mkdir()
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
   annotations:
-    noa.re/deploy-id: old-deploy-id
-data:
-  key: value
-"""
-    )
-    _commit_all(output, b"generated manifests")
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
-data:
-  key: value
-"""
-    )
-    config_commit = "a" * 40
-
-    result = _collect_generation_result(output, {manifest}, config_commit, {"idcat"})
-
-    assert result.deploy_id == _make_deploy_id(__version__, config_commit)
-    assert result.created_or_modified == set()
-    assert result.removed == set()
-    assert get_git_manifest_changes(output) == GitManifestChanges()
-
-
-def test_generate_ignores_deploy_id_changes_with_null_annotations(
-    tmp_path: Path,
-) -> None:
-    """A null annotations field is equivalent to no annotations."""
-    output = tmp_path / "output"
-    output.mkdir()
-    init_test_repo(output)
-    manifest = output / "loki" / "service-loki.yaml"
-    manifest.parent.mkdir()
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: Service
-metadata:
-  name: loki
-  namespace: loki
-  annotations:
-    noa.re/deploy-id: old-deploy-id
-spec:
-  type: ClusterIP
-"""
-    )
-    _commit_all(output, b"generated manifests")
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: Service
-metadata:
-  name: loki
-  namespace: loki
-  annotations: null
-spec:
-  type: ClusterIP
-"""
-    )
-    config_commit = "a" * 40
-
-    result = _collect_generation_result(output, {manifest}, config_commit, {"loki"})
-
-    assert result.deploy_id == _make_deploy_id(__version__, config_commit)
-    assert result.created_or_modified == set()
-    assert result.removed == set()
-    assert get_git_manifest_changes(output) == GitManifestChanges()
-
-
-def test_generate_restores_deploy_id_only_changes_without_config_commit(
-    tmp_path: Path,
-) -> None:
-    """Git-backed output preserves existing deploy ids when no new id is available."""
-    output = tmp_path / "output"
-    output.mkdir()
-    init_test_repo(output)
-    manifest = output / "idcat" / "configmap-settings.yaml"
-    manifest.parent.mkdir()
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
-  annotations:
-    noa.re/deploy-id: old-deploy-id
-data:
-  key: value
-"""
-    )
-    _commit_all(output, b"generated manifests")
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
-data:
-  key: value
-"""
-    )
-
-    result = _collect_generation_result(output, {manifest}, None, {"idcat"})
-
-    assert result.deploy_id is None
-    assert result.created_or_modified == set()
-    assert result.removed == set()
-    assert get_git_manifest_changes(output) == GitManifestChanges()
-    assert (
-        DEPLOY_ID_ANNOTATION
-        in yaml.safe_load(manifest.read_text())["metadata"]["annotations"]
-    )
-
-
-def test_generate_restores_deploy_id_only_changes_with_unresolved_output_path(
-    tmp_path: Path,
-) -> None:
-    """Managed-root filtering handles output paths containing parent segments."""
-    output = tmp_path / "output"
-    caller = tmp_path / "caller"
-    output.mkdir()
-    caller.mkdir()
-    init_test_repo(output)
-    manifest = output / "idcat" / "configmap-settings.yaml"
-    manifest.parent.mkdir()
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
-  annotations:
-    noa.re/deploy-id: old-deploy-id
-data:
-  key: value
-"""
-    )
-    _commit_all(output, b"generated manifests")
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
-data:
-  key: value
+    noa.re/manifest-id: 0123456789abcdef
 """
     )
 
     result = _collect_generation_result(
-        caller / ".." / "output",
-        {manifest},
-        None,
-        {"idcat"},
+        output, {manifest}, {"idcat", "blackbox-exporter"}
     )
 
-    assert result.created_or_modified == set()
-    assert get_git_manifest_changes(output) == GitManifestChanges()
+    deployment = KubernetesObjectRef(
+        "Deployment", "observability", "blackbox-exporter", "apps/v1"
+    )
+    assert result.created_or_modified == {deployment}
+    assert result.manifest_ids == {deployment: "0123456789abcdef"}
+    assert result.removed == set()
 
 
 @mock.patch("manifest_builder.api.generate_manifests")
@@ -495,6 +464,7 @@ def test_create_commit_requires_output_git_checkout(
     mock_generate_manifests.assert_not_called()
 
 
+@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value={"owned"})
 @mock.patch("manifest_builder.api.load_images", return_value={"app": "image"})
@@ -508,6 +478,7 @@ def test_generate_accepts_config_and_output_paths(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
+    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """The reusable generation function accepts config and output Paths."""
@@ -553,6 +524,7 @@ def test_generate_accepts_config_and_output_paths(
     )
 
 
+@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -566,6 +538,7 @@ def test_generate_passes_vars_as_extra_variables(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
+    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """The API vars parameter is merged like --vars-from variables."""
@@ -667,6 +640,7 @@ def test_load_api_variables_rejects_nested_vars(tmp_path: Path) -> None:
         _load_api_variables(tmp_path, None, bad_vars)
 
 
+@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -680,6 +654,7 @@ def test_generate_namespace_mode_writes_owner_file(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
+    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """Namespace mode declares ownership in the output owners directory."""
@@ -715,6 +690,7 @@ def test_generate_namespace_mode_writes_owner_file(
     )
 
 
+@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -728,6 +704,7 @@ def test_generate_namespace_mode_passes_image_default(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
+    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """The API image parameter is passed as a namespace-mode config default."""
@@ -942,6 +919,7 @@ image = "registry.example.com/team-a:1.0"
     assert output / "team-a" / "deployment-team-a.yaml" in result.written_paths
 
 
+@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -955,6 +933,7 @@ def test_generate_namespace_mode_rejects_cluster_output(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
+    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """Namespace mode fails when any generated file lands in cluster/."""
@@ -982,6 +961,7 @@ def test_generate_namespace_mode_rejects_cluster_output(
     assert not (output / "owners" / "team-a.toml").exists()
 
 
+@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.create_manifest_commit")
 @mock.patch("manifest_builder.api.get_git_tracked_remote", return_value="config.git")
 @mock.patch("manifest_builder.api.get_git_commit_subject", return_value="Config change")
@@ -1009,6 +989,7 @@ def test_namespace_mode_commit_preserves_non_target_directories(
     mock_get_git_commit_subject: mock.Mock,
     mock_get_git_tracked_remote: mock.Mock,
     mock_create_manifest_commit: mock.Mock,
+    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """Namespace-mode commits stage only the target namespace and owner file."""
@@ -1360,91 +1341,3 @@ cluster_name = "small-cluster"
 
     assert output / "base" / "configmap-base-settings.yaml" in result.written_paths
     assert not (output / "platform").exists()
-
-
-def test_generate_keeps_a_quoting_only_change(tmp_path: Path) -> None:
-    """A value requoted so the API server reads it as a string must survive.
-
-    Comparing the parsed documents would call these equal, because PyYAML
-    reads 032445865269 back as a string whether it is quoted or not, and the
-    unquoted version would be restored over the fix on every run.
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    init_test_repo(output)
-    manifest = output / "teleport" / "teleportprovisiontoken-iam-node-join.yaml"
-    manifest.parent.mkdir()
-    manifest.write_text(
-        """\
-apiVersion: resources.teleport.dev/v2
-kind: TeleportProvisionToken
-metadata:
-  name: iam-node-join
-  namespace: teleport
-  annotations:
-    noa.re/deploy-id: old-deploy-id
-spec:
-  allow:
-  - aws_account: 032445865269
-"""
-    )
-    _commit_all(output, b"generated manifests")
-    manifest.write_text(
-        """\
-apiVersion: resources.teleport.dev/v2
-kind: TeleportProvisionToken
-metadata:
-  name: iam-node-join
-  namespace: teleport
-spec:
-  allow:
-  - aws_account: '032445865269'
-"""
-    )
-
-    result = _collect_generation_result(output, {manifest}, "a" * 40, {"teleport"})
-
-    assert result.created_or_modified != set()
-    assert "'032445865269'" in manifest.read_text()
-
-
-def test_generate_ignores_deploy_id_before_another_annotation(tmp_path: Path) -> None:
-    """The annotations key survives masking wherever the deploy id sits under it."""
-    output = tmp_path / "output"
-    output.mkdir()
-    init_test_repo(output)
-    manifest = output / "idcat" / "configmap-settings.yaml"
-    manifest.parent.mkdir()
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
-  annotations:
-    noa.re/deploy-id: old-deploy-id
-    example.com/kept: value
-data:
-  key: value
-"""
-    )
-    _commit_all(output, b"generated manifests")
-    manifest.write_text(
-        """\
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: settings
-  namespace: idcat
-  annotations:
-    example.com/kept: value
-data:
-  key: value
-"""
-    )
-
-    result = _collect_generation_result(output, {manifest}, "a" * 40, {"idcat"})
-
-    assert result.created_or_modified == set()
-    assert get_git_manifest_changes(output) == GitManifestChanges()

@@ -30,4 +30,9 @@ class GenerationResult:
     written_paths: set[Path] = field(default_factory=set)
     created_or_modified: set[KubernetesObjectRef] = field(default_factory=set)
     removed: set[KubernetesObjectRef] = field(default_factory=set)
-    deploy_id: str | None = None
+    manifest_ids: dict[KubernetesObjectRef, str] = field(default_factory=dict)
+    """The ``noa.re/manifest-id`` each created or modified object was written with.
+
+    A manifest-id is a hash of the object's generated content, so a live object
+    carrying it has that content.
+    """

@@ -3,9 +3,8 @@
 import hashlib
 import json
 import logging
-import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -33,11 +32,11 @@ from manifest_builder.git_utils import (
     is_git_dirty,
 )
 from manifest_builder.helmfile import load_helmfile
-from manifest_builder.output import dump_yaml, load_all_yaml
+from manifest_builder.output import dump_all_yaml, dump_yaml, load_all_yaml
 from manifest_builder.result import GenerationResult, KubernetesObjectRef
 
 logger = logging.getLogger(__name__)
-DEPLOY_ID_ANNOTATION = "noa.re/deploy-id"
+MANIFEST_ID_ANNOTATION = "noa.re/manifest-id"
 
 
 def generate(
@@ -181,6 +180,7 @@ def generate(
         managed_namespaces={namespace} if namespace is not None else None,
         cleanup=False,
     )
+    _stamp_manifest_ids(path for path in written_paths if path.suffix == ".yaml")
 
     written_roots = _output_roots(output, written_paths)
     if namespace is not None:
@@ -202,14 +202,10 @@ def generate(
         commit_paths = {output / root for root in commit_roots}
         commit_paths.add(owner_path)
 
-    config_commit = get_git_commit(config) if is_git_checkout(config) else None
-    result = _collect_generation_result(
-        output, written_paths, config_commit, commit_roots
-    )
+    result = _collect_generation_result(output, written_paths, commit_roots)
 
     if create_commit:
-        if config_commit is None:
-            config_commit = get_git_commit(config)
+        config_commit = get_git_commit(config)
         config_subject = get_git_commit_subject(config)
         config_remote = get_git_tracked_remote(config)
         create_manifest_commit(
@@ -269,116 +265,53 @@ def _load_api_variables(
 def _collect_generation_result(
     output: Path,
     written_paths: set[Path],
-    config_commit: str | None,
     managed_roots: set[str] | None = None,
 ) -> GenerationResult:
-    """Annotate changed manifests and return object-level git changes."""
+    """Return object-level git changes and the manifest-ids they were written with."""
     if not is_git_checkout(output):
         return GenerationResult(written_paths=written_paths)
 
     changes = get_git_manifest_changes(output)
     if managed_roots is not None:
         changes = _filter_manifest_changes(output, changes, managed_roots)
-    if changes.modified:
-        _restore_deploy_id_only_changes(changes.modified)
-        changes = get_git_manifest_changes(output)
-        if managed_roots is not None:
-            changes = _filter_manifest_changes(output, changes, managed_roots)
-
-    deploy_id = _make_deploy_id(__version__, config_commit) if config_commit else None
-    if deploy_id is not None and changes.added_or_modified:
-        _annotate_manifest_files(changes.added_or_modified, deploy_id)
-        changes = get_git_manifest_changes(output)
-        if managed_roots is not None:
-            changes = _filter_manifest_changes(output, changes, managed_roots)
 
     return GenerationResult(
         written_paths=written_paths,
         created_or_modified=_object_refs_from_paths(changes.added_or_modified),
         removed=_object_refs_from_deleted_paths(changes.deleted),
-        deploy_id=deploy_id,
+        manifest_ids=_manifest_ids_from_paths(changes.added_or_modified),
     )
 
 
-def _make_deploy_id(version: str, config_commit: str) -> str:
-    """Return a deterministic 64-bit deploy id as 16 hex characters."""
-    return hashlib.sha256(f"{version}\0{config_commit}".encode()).hexdigest()[:16]
+def _manifest_id(doc: dict) -> str:
+    """Return a 64-bit id for a document's content as 16 hex characters."""
+    return hashlib.sha256(dump_all_yaml([doc]).encode()).hexdigest()[:16]
 
 
-def _restore_deploy_id_only_changes(paths: set[Path]) -> None:
-    """Restore modified files whose only semantic diff is the deploy-id annotation."""
-    for path in sorted(paths):
-        head_content = get_git_head_file(path)
-        working_content = path.read_text()
-        if _manifests_equal_ignoring_deploy_id(head_content.decode(), working_content):
-            path.write_bytes(head_content)
-
-
-# metadata.annotations sits at two spaces and its keys at four, so anchoring
-# the indent keeps a spec field of the same name from being masked out.
-_DEPLOY_ID_ANNOTATION_LINE = re.compile(
-    rf"^    {re.escape(DEPLOY_ID_ANNOTATION)}: .*\n",
-    re.MULTILINE,
-)
-# An annotations key with nothing at four spaces under it, once the deploy-id
-# is gone, along with the empty mapping a chart can emit where generation
-# emits no annotations at all.
-_ANNOTATIONS_WITHOUT_KEYS = re.compile(
-    r"^  annotations:(?: null| \{\})?\n(?!    )",
-    re.MULTILINE,
-)
-
-
-def _manifests_equal_ignoring_deploy_id(left: str, right: str) -> bool:
-    """Return whether two manifest streams match aside from deploy-id annotations.
-
-    Compared as text. Parsing both sides and comparing the documents would
-    treat a change the API server cares about as no change at all, because
-    PyYAML reads an AWS account id like 032445865269 back as a string whether
-    it is quoted or not: a generation that fixed the quoting would be restored
-    to the unquoted version it had just replaced, on every run.
-
-    Generation writes no deploy-id, so the annotation is stripped rather than
-    normalised, and with it the annotations key when nothing else is under it.
-    The result is not valid YAML; it only has to be stable on both sides.
-    """
-    return _without_deploy_id_text(left) == _without_deploy_id_text(right)
-
-
-def _without_deploy_id_text(manifest: str) -> str:
-    masked = _DEPLOY_ID_ANNOTATION_LINE.sub("", manifest)
-    return _ANNOTATIONS_WITHOUT_KEYS.sub("", masked)
-
-
-def _annotate_manifest_files(paths: set[Path], deploy_id: str) -> None:
+def _stamp_manifest_ids(paths: Iterable[Path]) -> None:
     for path in sorted(paths):
         text = path.read_text()
         leading_comments = _leading_comments(text)
         documents = load_all_yaml(text)
-        changed = False
         for doc in documents:
             if not isinstance(doc, dict) or not doc.get("kind"):
                 continue
             metadata = doc.setdefault("metadata", {})
             if not isinstance(metadata, dict):
                 raise TypeError(f"metadata is not a dict in {path}")
-            annotations = metadata.setdefault("annotations", {})
-            if annotations is None:
-                annotations = {}
-                metadata["annotations"] = annotations
-            if not isinstance(annotations, dict):
+            if metadata.get("annotations") is None:
+                metadata.pop("annotations", None)
+            elif not isinstance(metadata["annotations"], dict):
                 raise TypeError(f"metadata.annotations is not a dict in {path}")
-            if annotations.get(DEPLOY_ID_ANNOTATION) != deploy_id:
-                annotations[DEPLOY_ID_ANNOTATION] = deploy_id
-                changed = True
+            manifest_id = _manifest_id(doc)
+            metadata.setdefault("annotations", {})[MANIFEST_ID_ANNOTATION] = manifest_id
 
-        if changed:
-            with open(path, "w") as f:
-                f.write(leading_comments)
-                for index, doc in enumerate(documents):
-                    if index:
-                        f.write("---\n")
-                    dump_yaml(doc, f)
+        with open(path, "w") as f:
+            f.write(leading_comments)
+            for index, doc in enumerate(documents):
+                if index:
+                    f.write("---\n")
+                dump_yaml(doc, f)
 
 
 def _leading_comments(text: str) -> str:
@@ -388,6 +321,18 @@ def _leading_comments(text: str) -> str:
             break
         comments.append(line)
     return "".join(comments)
+
+
+def _manifest_ids_from_paths(paths: set[Path]) -> dict[KubernetesObjectRef, str]:
+    manifest_ids: dict[KubernetesObjectRef, str] = {}
+    for path in paths:
+        for doc in load_all_yaml(path.read_text()):
+            ref = _object_ref_from_doc(doc)
+            annotations = (doc.get("metadata") or {}).get("annotations") or {}
+            manifest_id = annotations.get(MANIFEST_ID_ANNOTATION)
+            if ref is not None and isinstance(manifest_id, str):
+                manifest_ids[ref] = manifest_id
+    return manifest_ids
 
 
 def _object_refs_from_paths(paths: set[Path]) -> set[KubernetesObjectRef]:
