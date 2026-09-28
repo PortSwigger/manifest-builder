@@ -14,9 +14,7 @@ from manifest_builder.config import (
     ManifestConfig,
 )
 from manifest_builder.helm import ChartCacheStats
-from manifest_builder.output import (
-    dump_yaml,
-)
+from manifest_builder.output import dump_yaml, stamp_manifest_id
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +355,7 @@ def _ensure_namespaces(
             },
         }
         out_path = ns_dir / ns_filename
+        stamp_manifest_id(doc)
         with open(out_path, "w") as f:
             dump_yaml(doc, f)
 

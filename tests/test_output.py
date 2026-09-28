@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: The manifest-builder contributors
 """Tests for YAML serialization."""
 
+import copy
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import yaml
 from manifest_builder.output import (
     ARGO_SYNC_OPTIONS_ANNOTATION,
     LAST_APPLIED_ANNOTATION,
+    MANIFEST_ID_ANNOTATION,
     dump_all_yaml,
     write_documents,
     write_manifests,
@@ -76,8 +78,64 @@ def _set_description(crd: dict, value: str) -> None:
 
 
 def _write_and_read(doc: dict, tmp_path: Path) -> dict:
-    paths = write_documents([doc], tmp_path, "default")
-    return yaml.safe_load(next(iter(paths)).read_text())
+    """Write a copy of ``doc`` and read it back without its manifest-id."""
+    paths = write_documents([copy.deepcopy(doc)], tmp_path, "default")
+    written = yaml.safe_load(next(iter(paths)).read_text())
+    annotations = written["metadata"]["annotations"]
+    del annotations[MANIFEST_ID_ANNOTATION]
+    if not annotations:
+        del written["metadata"]["annotations"]
+    return written
+
+
+def _configmap(name: str, value: str) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": name},
+        "data": {"key": value},
+    }
+
+
+def _manifest_id(path: Path) -> str:
+    return yaml.safe_load(path.read_text())["metadata"]["annotations"][
+        MANIFEST_ID_ANNOTATION
+    ]
+
+
+def test_written_objects_carry_a_manifest_id_of_their_content(tmp_path: Path) -> None:
+    first = write_documents([_configmap("a", "one")], tmp_path / "first", "default")
+    again = write_documents([_configmap("a", "one")], tmp_path / "again", "default")
+    other = write_documents([_configmap("a", "two")], tmp_path / "other", "default")
+
+    [first_id] = [_manifest_id(path) for path in first]
+    [again_id] = [_manifest_id(path) for path in again]
+    [other_id] = [_manifest_id(path) for path in other]
+    assert first_id == again_id
+    assert first_id != other_id
+    assert len(first_id) == 16
+
+
+def test_an_empty_annotations_key_is_stamped_where_it_is(tmp_path: Path) -> None:
+    """A chart's ``annotations:`` with nothing under it keeps its place."""
+    doc = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": "hubble-relay",
+            "annotations": None,
+            "labels": {"k8s-app": "hubble-relay"},
+        },
+    }
+
+    [path] = write_documents([doc], tmp_path, "kube-system")
+
+    keys = [line for line in path.read_text().splitlines() if line.startswith("  ")]
+    assert keys[1:4] == [
+        "  annotations:",
+        f"    {MANIFEST_ID_ANNOTATION}: {_manifest_id(path)}",
+        "  labels:",
+    ]
 
 
 @pytest.mark.parametrize("delta, expected", [(-1, False), (0, True), (1, True)])
@@ -199,9 +257,9 @@ def test_yaml_list_crd_is_annotated_after_helm_metadata_is_stripped(
     paths = write_manifests(content, tmp_path, "default")
     path = next(iter(paths))
     assert path.parent.name == "cluster"
-    assert yaml.safe_load(path.read_text())["metadata"]["annotations"] == {
-        ARGO_SYNC_OPTIONS_ANNOTATION: "ServerSideApply=true"
-    }
+    annotations = yaml.safe_load(path.read_text())["metadata"]["annotations"]
+    assert annotations[ARGO_SYNC_OPTIONS_ANNOTATION] == "ServerSideApply=true"
+    assert set(annotations) == {ARGO_SYNC_OPTIONS_ANNOTATION, MANIFEST_ID_ANNOTATION}
 
 
 def test_stripped_helm_annotations_do_not_trigger_ssa(
