@@ -7,6 +7,7 @@ or :func:`write_manifests`, which route each object to the namespace or
 ``cluster`` directory under the output root.
 """
 
+import hashlib
 import io
 import json
 import logging
@@ -27,6 +28,7 @@ YAML_DUMPER: type[yaml.Dumper] = getattr(yaml, "CDumper", yaml.Dumper)
 CRD_CLIENT_SIDE_APPLY_BUDGET = 240 * 1024
 LAST_APPLIED_ANNOTATION = "kubectl.kubernetes.io/last-applied-configuration"
 ARGO_SYNC_OPTIONS_ANNOTATION = "argocd.argoproj.io/sync-options"
+MANIFEST_ID_ANNOTATION = "noa.re/manifest-id"
 
 
 NUMBER_LIKE = re.compile(r"[-+]?[0-9][0-9_]*(\.[0-9_]*)?([eE][-+]?[0-9]+)?")
@@ -207,6 +209,7 @@ def write_documents(
         filename = _manifest_filename(kind, name)
         output_path = dest_dir / filename
 
+        stamp_manifest_id(doc)
         with open(output_path, "w") as f:
             if app_name:
                 f.write(f"# Source: {app_name}\n")
@@ -216,6 +219,16 @@ def write_documents(
         written.add(output_path)
 
     return written
+
+
+def stamp_manifest_id(doc: dict) -> None:
+    """Annotate ``doc`` with a hash of its content, as it is about to be written."""
+    manifest_id = hashlib.sha256(dump_all_yaml([doc]).encode()).hexdigest()[:16]
+    metadata = doc.setdefault("metadata", {})
+    # Assigning to a key a chart left null keeps it where the chart put it.
+    if metadata.get("annotations") is None:
+        metadata["annotations"] = {}
+    metadata["annotations"][MANIFEST_ID_ANNOTATION] = manifest_id
 
 
 def _manifest_filename(kind: str, name: str) -> str:

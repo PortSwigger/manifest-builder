@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: The manifest-builder contributors
-import hashlib
 import json
 import logging
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +31,10 @@ from manifest_builder.git_utils import (
     is_git_dirty,
 )
 from manifest_builder.helmfile import load_helmfile
-from manifest_builder.output import dump_all_yaml, dump_yaml, load_all_yaml
+from manifest_builder.output import MANIFEST_ID_ANNOTATION, load_all_yaml
 from manifest_builder.result import GenerationResult, KubernetesObjectRef
 
 logger = logging.getLogger(__name__)
-MANIFEST_ID_ANNOTATION = "noa.re/manifest-id"
 
 
 def generate(
@@ -180,7 +178,6 @@ def generate(
         managed_namespaces={namespace} if namespace is not None else None,
         cleanup=False,
     )
-    _stamp_manifest_ids(path for path in written_paths if path.suffix == ".yaml")
 
     written_roots = _output_roots(output, written_paths)
     if namespace is not None:
@@ -281,46 +278,6 @@ def _collect_generation_result(
         removed=_object_refs_from_deleted_paths(changes.deleted),
         manifest_ids=_manifest_ids_from_paths(changes.added_or_modified),
     )
-
-
-def _manifest_id(doc: dict) -> str:
-    """Return a 64-bit id for a document's content as 16 hex characters."""
-    return hashlib.sha256(dump_all_yaml([doc]).encode()).hexdigest()[:16]
-
-
-def _stamp_manifest_ids(paths: Iterable[Path]) -> None:
-    for path in sorted(paths):
-        text = path.read_text()
-        leading_comments = _leading_comments(text)
-        documents = load_all_yaml(text)
-        for doc in documents:
-            if not isinstance(doc, dict) or not doc.get("kind"):
-                continue
-            metadata = doc.setdefault("metadata", {})
-            if not isinstance(metadata, dict):
-                raise TypeError(f"metadata is not a dict in {path}")
-            if metadata.get("annotations") is None:
-                metadata.pop("annotations", None)
-            elif not isinstance(metadata["annotations"], dict):
-                raise TypeError(f"metadata.annotations is not a dict in {path}")
-            manifest_id = _manifest_id(doc)
-            metadata.setdefault("annotations", {})[MANIFEST_ID_ANNOTATION] = manifest_id
-
-        with open(path, "w") as f:
-            f.write(leading_comments)
-            for index, doc in enumerate(documents):
-                if index:
-                    f.write("---\n")
-                dump_yaml(doc, f)
-
-
-def _leading_comments(text: str) -> str:
-    comments: list[str] = []
-    for line in text.splitlines(keepends=True):
-        if not line.startswith("#"):
-            break
-        comments.append(line)
-    return "".join(comments)
 
 
 def _manifest_ids_from_paths(paths: set[Path]) -> dict[KubernetesObjectRef, str]:

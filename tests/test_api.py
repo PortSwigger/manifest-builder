@@ -464,7 +464,6 @@ def test_create_commit_requires_output_git_checkout(
     mock_generate_manifests.assert_not_called()
 
 
-@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value={"owned"})
 @mock.patch("manifest_builder.api.load_images", return_value={"app": "image"})
@@ -478,7 +477,6 @@ def test_generate_accepts_config_and_output_paths(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
-    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """The reusable generation function accepts config and output Paths."""
@@ -524,7 +522,6 @@ def test_generate_accepts_config_and_output_paths(
     )
 
 
-@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -538,7 +535,6 @@ def test_generate_passes_vars_as_extra_variables(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
-    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """The API vars parameter is merged like --vars-from variables."""
@@ -640,7 +636,6 @@ def test_load_api_variables_rejects_nested_vars(tmp_path: Path) -> None:
         _load_api_variables(tmp_path, None, bad_vars)
 
 
-@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -654,7 +649,6 @@ def test_generate_namespace_mode_writes_owner_file(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
-    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """Namespace mode declares ownership in the output owners directory."""
@@ -690,7 +684,6 @@ def test_generate_namespace_mode_writes_owner_file(
     )
 
 
-@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -704,7 +697,6 @@ def test_generate_namespace_mode_passes_image_default(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
-    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """The API image parameter is passed as a namespace-mode config default."""
@@ -919,7 +911,6 @@ image = "registry.example.com/team-a:1.0"
     assert output / "team-a" / "deployment-team-a.yaml" in result.written_paths
 
 
-@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.generate_manifests")
 @mock.patch("manifest_builder.api.load_owned_namespaces", return_value=set())
 @mock.patch("manifest_builder.api.load_images", return_value={})
@@ -933,7 +924,6 @@ def test_generate_namespace_mode_rejects_cluster_output(
     mock_load_images: mock.Mock,
     mock_load_owned_namespaces: mock.Mock,
     mock_generate_manifests: mock.Mock,
-    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """Namespace mode fails when any generated file lands in cluster/."""
@@ -961,7 +951,6 @@ def test_generate_namespace_mode_rejects_cluster_output(
     assert not (output / "owners" / "team-a.toml").exists()
 
 
-@mock.patch("manifest_builder.api._stamp_manifest_ids")
 @mock.patch("manifest_builder.api.create_manifest_commit")
 @mock.patch("manifest_builder.api.get_git_tracked_remote", return_value="config.git")
 @mock.patch("manifest_builder.api.get_git_commit_subject", return_value="Config change")
@@ -989,7 +978,6 @@ def test_namespace_mode_commit_preserves_non_target_directories(
     mock_get_git_commit_subject: mock.Mock,
     mock_get_git_tracked_remote: mock.Mock,
     mock_create_manifest_commit: mock.Mock,
-    mock_stamp_manifest_ids: mock.Mock,
     tmp_path: Path,
 ) -> None:
     """Namespace-mode commits stage only the target namespace and owner file."""
