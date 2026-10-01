@@ -9,12 +9,15 @@ from typing import cast
 import pytest
 from conftest import init_test_repo
 from dulwich import porcelain
+from dulwich.index import IndexEntry
 from dulwich.objects import Commit
 from dulwich.repo import Repo
 
 from manifest_builder.git_utils import (
+    GitManifestChanges,
     create_manifest_commit,
     get_git_commit_subject,
+    get_git_manifest_changes,
     get_git_tracked_remote,
     is_git_checkout,
     is_git_dirty,
@@ -294,3 +297,82 @@ def test_create_manifest_commit_stages_only_requested_paths(
     assert porcelain.status(tmp_path).unstaged == [
         b"cluster/clusterrole-system:metrics-server.yaml"
     ]
+
+
+def test_get_git_manifest_changes_reports_only_the_given_roots(
+    tmp_path: Path,
+) -> None:
+    """Changes outside the roots are neither reported nor read."""
+    init_test_repo(tmp_path)
+    kept = tmp_path / "team-a" / "configmap-kept.yaml"
+    edited = tmp_path / "team-a" / "configmap-edited.yaml"
+    gone = tmp_path / "team-a" / "configmap-gone.yaml"
+    elsewhere = tmp_path / "team-b" / "configmap-elsewhere.yaml"
+    for path in (kept, edited, gone, elsewhere):
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("apiVersion: v1\nkind: ConfigMap\n")
+    _commit_all(tmp_path)
+
+    kept.write_text("apiVersion: v1\nkind: ConfigMap\n")
+    edited.write_text("apiVersion: v1\nkind: ConfigMap\ndata: {}\n")
+    gone.unlink()
+    added = tmp_path / "team-a" / "new" / "configmap-added.yaml"
+    added.parent.mkdir()
+    added.write_text("apiVersion: v1\nkind: ConfigMap\n")
+    elsewhere.write_text("apiVersion: v1\nkind: ConfigMap\ndata: {}\n")
+
+    changes = get_git_manifest_changes(tmp_path, {tmp_path / "team-a"})
+
+    assert changes == GitManifestChanges(
+        added={added}, modified={edited}, deleted={gone}
+    )
+
+
+def test_create_manifest_commit_refreshes_rewritten_unchanged_files(
+    tmp_path: Path,
+) -> None:
+    """A rewrite with identical content leaves no stale stat in the index.
+
+    A stale entry makes every later status re-read and re-hash the file.
+    """
+    init_test_repo(tmp_path)
+    manifest = tmp_path / "team-a" / "configmap-app.yaml"
+    manifest.parent.mkdir()
+    manifest.write_text("apiVersion: v1\nkind: ConfigMap\n")
+    first_commit = _commit_all(tmp_path)
+
+    manifest.unlink()
+    manifest.write_text("apiVersion: v1\nkind: ConfigMap\n")
+    create_manifest_commit(
+        output_dir=tmp_path,
+        version="1.2.3",
+        config_remote="https://example.com/config.git",
+        config_commit="abc123",
+        config_subject="Update production config",
+        generated_files={manifest},
+        stage_paths={tmp_path / "team-a"},
+    )
+
+    with Repo.discover(tmp_path) as repo:
+        assert repo.head() == first_commit
+        entry = repo.open_index()[b"team-a/configmap-app.yaml"]
+    assert isinstance(entry, IndexEntry)
+    assert entry.ino == manifest.stat().st_ino
+
+
+def test_get_git_manifest_changes_tracks_a_symlinked_directory_as_a_file(
+    tmp_path: Path,
+) -> None:
+    """Git stores a symlink to a directory as a link, never descending into it."""
+    init_test_repo(tmp_path)
+    (tmp_path / "team-a").mkdir()
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared" / "configmap-shared.yaml").write_text("kind: ConfigMap\n")
+    _commit_all(tmp_path)
+
+    link = tmp_path / "team-a" / "linked.yaml"
+    link.symlink_to(tmp_path / "shared")
+
+    changes = get_git_manifest_changes(tmp_path, {tmp_path / "team-a"})
+
+    assert changes == GitManifestChanges(added={link})

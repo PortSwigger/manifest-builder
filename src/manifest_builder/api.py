@@ -20,7 +20,6 @@ from manifest_builder.config import (
 from manifest_builder.discovery import ExternalPlugins, discover_blocks
 from manifest_builder.generator import generate_manifests, plural
 from manifest_builder.git_utils import (
-    GitManifestChanges,
     create_manifest_commit,
     get_git_commit,
     get_git_commit_subject,
@@ -268,9 +267,8 @@ def _collect_generation_result(
     if not is_git_checkout(output):
         return GenerationResult(written_paths=written_paths)
 
-    changes = get_git_manifest_changes(output)
-    if managed_roots is not None:
-        changes = _filter_manifest_changes(output, changes, managed_roots)
+    roots = None if managed_roots is None else {output / root for root in managed_roots}
+    changes = get_git_manifest_changes(output, roots)
 
     return GenerationResult(
         written_paths=written_paths,
@@ -429,28 +427,3 @@ def _validate_output_root(root: str, source: Path) -> str:
     ):
         raise ValueError(f"Invalid output root {root!r} in {source}")
     return root
-
-
-def _filter_manifest_changes(
-    output: Path, changes: GitManifestChanges, managed_roots: set[str]
-) -> GitManifestChanges:
-    """Limit git change reporting to the roots owned by this invocation."""
-    return GitManifestChanges(
-        added=_filter_paths_to_roots(output, changes.added, managed_roots),
-        modified=_filter_paths_to_roots(output, changes.modified, managed_roots),
-        deleted=_filter_paths_to_roots(output, changes.deleted, managed_roots),
-    )
-
-
-def _filter_paths_to_roots(
-    output: Path, paths: set[Path], managed_roots: set[str]
-) -> set[Path]:
-    return {path for path in paths if _path_output_root(output, path) in managed_roots}
-
-
-def _path_output_root(output: Path, path: Path) -> str | None:
-    try:
-        rel_parts = path.resolve().relative_to(output.resolve()).parts
-    except ValueError:
-        return None
-    return rel_parts[0] if rel_parts else None
