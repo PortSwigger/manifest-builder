@@ -3,14 +3,29 @@
 """Git utilities for manifest generation and versioning."""
 
 import logging
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
 
 from dulwich import porcelain
+from dulwich.diff_tree import CHANGE_ADD, CHANGE_DELETE, TreeChange, tree_changes
 from dulwich.errors import NotGitRepository
-from dulwich.objects import Blob, Commit, Tree
+from dulwich.ignore import IgnoreFilterManager
+from dulwich.index import (
+    ConflictedIndexEntry,
+    blob_from_path_and_stat,
+    cleanup_mode,
+    commit_index,
+    commit_tree,
+)
+from dulwich.object_store import (
+    BaseObjectStore,
+    MemoryObjectStore,
+    OverlayObjectStore,
+)
+from dulwich.objects import Blob, Commit, ObjectID, Tree
 from dulwich.refs import Ref
 from dulwich.repo import Repo
 
@@ -183,39 +198,52 @@ def is_git_dirty(path: Path) -> bool:
         raise RuntimeError(f"Failed to check git status for {path}: {e}") from e
 
 
-def get_git_manifest_changes(path: Path) -> GitManifestChanges:
-    """Return changed YAML files below ``path`` using Dulwich status.
+def get_git_manifest_changes(
+    path: Path, roots: set[Path] | None = None
+) -> GitManifestChanges:
+    """Return changed YAML files below ``path``, comparing ``roots`` with HEAD.
 
-    The status is taken with ``untracked_files="all"``: Dulwich's default
-    reports a wholly untracked directory as the directory itself rather than
-    the files in it, which would hide every manifest of a newly added
-    namespace or application from the change set.
+    Only files under ``roots`` (``path`` by default) are read: they are hashed
+    into a tree held in memory and diffed against HEAD's, so directories
+    outside them cost one hash comparison each and the index is left alone.
     """
     try:
         repo = Repo.discover(path)
         try:
             repo_root = Path(repo.path).resolve()
             output_root = path.resolve()
-            status = porcelain.status(repo, untracked_files="all")
+            prefixes = _tree_prefixes(repo_root, roots or {path})
+            index = repo.open_index()
+            scratch = MemoryObjectStore()
+            store = OverlayObjectStore([scratch, repo.object_store], scratch)
+            normalizer = repo.get_blob_normalizer()
+            entries: dict[bytes, tuple[ObjectID, int]] = {}
+            for tree_path, entry in index.iteritems():
+                if isinstance(entry, ConflictedIndexEntry) or _under_any(
+                    tree_path, prefixes
+                ):
+                    continue
+                entries[tree_path] = (entry.sha, entry.mode)
+            for tree_path in _files_on_disk(repo, repo_root, prefixes):
+                full_path = os.path.join(os.fsencode(repo_root), tree_path)
+                st = os.lstat(full_path)
+                blob = normalizer.checkin_normalize(
+                    blob_from_path_and_stat(full_path, st), tree_path
+                )
+                entries[tree_path] = (blob.id, cleanup_mode(st.st_mode))
+            tree = commit_tree(
+                store, [(p, sha, mode) for p, (sha, mode) in entries.items()]
+            )
+
             changes = GitManifestChanges()
-
-            for raw_path in status.staged.get("add", []):
-                _add_status_path(changes.added, repo_root, output_root, raw_path)
-            for raw_path in status.staged.get("modify", []):
-                _add_status_path(changes.modified, repo_root, output_root, raw_path)
-            for raw_path in status.staged.get("delete", []):
-                _add_status_path(changes.deleted, repo_root, output_root, raw_path)
-
-            for raw_path in status.untracked:
-                _add_status_path(changes.added, repo_root, output_root, raw_path)
-
-            for raw_path in status.unstaged:
-                absolute_path = repo_root / raw_path.decode("utf-8")
-                if absolute_path.exists():
-                    _add_status_path(changes.modified, repo_root, output_root, raw_path)
+            for change in _changes_under(store, _head_tree(repo), tree, prefixes):
+                if change.type == CHANGE_ADD:
+                    paths = changes.added
+                elif change.type == CHANGE_DELETE:
+                    paths = changes.deleted
                 else:
-                    _add_status_path(changes.deleted, repo_root, output_root, raw_path)
-
+                    paths = changes.modified
+                _add_status_path(paths, repo_root, output_root, _changed_path(change))
             return changes
         finally:
             repo.close()
@@ -282,20 +310,72 @@ def _relative_to_repo(repo: Repo, path: Path) -> Path:
     return path.resolve().relative_to(repo_root)
 
 
-def _staged_status_has_path_under_any(
-    status: porcelain.GitStatus, repo_root: Path, roots: set[Path]
-) -> bool:
-    """Return whether staged status contains a path below any root."""
-    for paths in status.staged.values():
-        for raw_path in paths:
-            absolute_path = repo_root / raw_path.decode("utf-8")
-            for root in roots:
-                try:
-                    absolute_path.relative_to(root)
-                except ValueError:
-                    continue
-                return True
-    return False
+def _tree_prefixes(repo_root: Path, roots: Iterable[Path]) -> set[bytes]:
+    """Return ``roots`` as tree paths; the repository root becomes ``b""``."""
+    prefixes: set[bytes] = set()
+    for root in roots:
+        relative = root.resolve().relative_to(repo_root).as_posix()
+        prefixes.add(b"" if relative == "." else relative.encode("utf-8"))
+    return prefixes
+
+
+def _under_any(tree_path: bytes, prefixes: set[bytes]) -> bool:
+    return any(
+        not prefix or tree_path == prefix or tree_path.startswith(prefix + b"/")
+        for prefix in prefixes
+    )
+
+
+def _files_on_disk(repo: Repo, repo_root: Path, prefixes: set[bytes]) -> set[bytes]:
+    """Return tree paths of the files below ``prefixes`` git would track."""
+    ignore_manager = IgnoreFilterManager.from_repo(repo)
+    found: set[bytes] = set()
+    for prefix in prefixes:
+        top = repo_root / prefix.decode("utf-8")
+        if top.is_file() or top.is_symlink():
+            candidates: Iterable[Path] = [top]
+        elif top.is_dir():
+            candidates = _walk_files(top)
+        else:
+            continue
+        for candidate in candidates:
+            relative = candidate.relative_to(repo_root).as_posix()
+            if not ignore_manager.is_ignored(relative):
+                found.add(relative.encode("utf-8"))
+    return found
+
+
+def _walk_files(top: Path) -> Iterable[Path]:
+    for directory, subdirectories, files in os.walk(top):
+        subdirectories[:] = [name for name in subdirectories if name != ".git"]
+        for name in files + subdirectories:
+            path = Path(directory) / name
+            if name in files or path.is_symlink():
+                yield path
+
+
+def _head_tree(repo: Repo) -> ObjectID | None:
+    try:
+        return cast(Commit, repo[repo.head()]).tree
+    except KeyError:
+        return None
+
+
+def _changes_under(
+    store: BaseObjectStore,
+    old_tree: ObjectID | None,
+    new_tree: ObjectID,
+    prefixes: set[bytes],
+) -> Iterable[TreeChange]:
+    for change in tree_changes(store, old_tree, new_tree):
+        if _under_any(_changed_path(change), prefixes):
+            yield change
+
+
+def _changed_path(change: TreeChange) -> bytes:
+    entry = change.new if change.type == CHANGE_ADD else change.old
+    assert entry is not None and entry.path is not None
+    return entry.path
 
 
 def create_manifest_commit(
@@ -333,17 +413,19 @@ def create_manifest_commit(
         repo = Repo.discover(output_dir)
         try:
             repo_root = Path(repo.path).resolve()
-            output_root = output_dir.resolve()
-            roots = {output_root}
-            if stage_paths is None:
-                pathspecs = [str(_relative_to_repo(repo, output_dir))]
-            else:
-                roots = {path.resolve() for path in stage_paths}
-                pathspecs = _relative_stage_paths(repo, stage_paths)
-
-            porcelain.add(repo, paths=pathspecs)
-            status = porcelain.status(repo)
-            if not _staged_status_has_path_under_any(status, repo_root, roots):
+            prefixes = _tree_prefixes(repo_root, stage_paths or {output_dir})
+            tracked = {
+                tree_path
+                for tree_path, _entry in repo.open_index().iteritems()
+                if _under_any(tree_path, prefixes)
+            }
+            repo.get_worktree().stage(
+                sorted(tracked | _files_on_disk(repo, repo_root, prefixes))
+            )
+            tree = commit_index(repo.object_store, repo.open_index())
+            if not any(
+                _changes_under(repo.object_store, _head_tree(repo), tree, prefixes)
+            ):
                 logger.info("There is nothing to commit.")
                 return
 
@@ -373,13 +455,3 @@ def create_manifest_commit(
         logger.info("Created manifest commit in %s", output_dir)
     except Exception as e:
         raise RuntimeError(f"Failed to create git commit in {output_dir}: {e}") from e
-
-
-def _relative_stage_paths(repo: Repo, stage_paths: set[Path]) -> list[str]:
-    relative_paths: list[str] = []
-    for path in sorted(stage_paths):
-        try:
-            relative_paths.append(str(_relative_to_repo(repo, path)))
-        except ValueError:
-            relative_paths.append(str(path))
-    return relative_paths
