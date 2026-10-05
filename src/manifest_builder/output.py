@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,20 @@ CRD_CLIENT_SIDE_APPLY_BUDGET = 240 * 1024
 LAST_APPLIED_ANNOTATION = "kubectl.kubernetes.io/last-applied-configuration"
 ARGO_SYNC_OPTIONS_ANNOTATION = "argocd.argoproj.io/sync-options"
 MANIFEST_ID_ANNOTATION = "noa.re/manifest-id"
+
+
+#: Paths written during the current run, so that a later call writing to one of them
+#: is caught rather than silently replacing the earlier object. A config may write in
+#: several calls, such as a helm release's chart followed by its extra resources, so
+#: the check cannot be local to one call.
+_written_paths: set[Path] = set()
+_written_paths_lock = threading.Lock()
+
+
+def reset_written_paths() -> None:
+    """Forget the paths written earlier. Called at the start of a run."""
+    with _written_paths_lock:
+        _written_paths.clear()
 
 
 NUMBER_LIKE = re.compile(r"[-+]?[0-9][0-9_]*(\.[0-9_]*)?([eE][-+]?[0-9]+)?")
@@ -176,6 +191,12 @@ def write_documents(
 
     Returns:
         Set of paths written
+
+    Raises:
+        ValueError: If an object maps to a file already written during this run,
+            which would otherwise leave only the last one. The file name is built
+            from the kind and name alone, so objects of the same kind and name
+            in different API groups collide.
     """
     if crd_scopes is None:
         crd_scopes = load_crd_scopes(documents)
@@ -210,6 +231,15 @@ def write_documents(
         output_path = dest_dir / filename
 
         stamp_manifest_id(doc)
+        with _written_paths_lock:
+            if output_path in _written_paths:
+                raise ValueError(
+                    f"{subdir}/{filename} would be written twice; the second is "
+                    f"{doc.get('apiVersion')} {kind}/{name}. Rename one of them: the "
+                    "file name is built from the kind and name alone."
+                )
+            _written_paths.add(output_path)
+
         with open(output_path, "w") as f:
             if app_name:
                 f.write(f"# Source: {app_name}\n")

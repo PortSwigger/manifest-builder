@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from manifest_builder.blocks.copy import CopyConfig, generate_copy
+from manifest_builder.output import reset_written_paths
 
 
 def _make_config(
@@ -528,6 +529,7 @@ spec:
     ]
 
     cfg_file.write_text("[dns]\nport = 54\n")
+    reset_written_paths()
     generate_copy(config, output_dir)
     second = _read_yaml(output_dir / "acme-dns" / "deployment-acme-dns.yaml")
     second_checksum = second["spec"]["template"]["metadata"]["annotations"][
