@@ -14,6 +14,7 @@ from manifest_builder.output import (
     LAST_APPLIED_ANNOTATION,
     MANIFEST_ID_ANNOTATION,
     dump_all_yaml,
+    reset_written_paths,
     write_documents,
     write_manifests,
 )
@@ -78,7 +79,12 @@ def _set_description(crd: dict, value: str) -> None:
 
 
 def _write_and_read(doc: dict, tmp_path: Path) -> dict:
-    """Write a copy of ``doc`` and read it back without its manifest-id."""
+    """Write a copy of ``doc`` and read it back without its manifest-id.
+
+    Callers write the same object again to check the result is stable, so each
+    write starts a fresh run.
+    """
+    reset_written_paths()
     paths = write_documents([copy.deepcopy(doc)], tmp_path, "default")
     written = yaml.safe_load(next(iter(paths)).read_text())
     annotations = written["metadata"]["annotations"]
@@ -267,3 +273,47 @@ def test_stripped_helm_annotations_do_not_trigger_ssa(
 ) -> None:
     crd["metadata"]["annotations"] = {"helm.sh/example": "x" * 262144}
     assert "annotations" not in _write_and_read(crd, tmp_path)["metadata"]
+
+
+def _role(api_version: str, name: str = "agent") -> dict:
+    return {
+        "apiVersion": api_version,
+        "kind": "Role",
+        "metadata": {"name": name, "namespace": "teleport"},
+    }
+
+
+def test_same_kind_and_name_in_different_api_groups_is_an_error(
+    tmp_path: Path,
+) -> None:
+    documents = [
+        _role("rbac.authorization.k8s.io/v1"),
+        _role("iam.aws.m.upbound.io/v1beta1"),
+    ]
+
+    with pytest.raises(ValueError, match=r"role-agent\.yaml.*iam\.aws\.m"):
+        write_documents(documents, tmp_path, "teleport")
+
+
+def test_an_identical_duplicate_is_an_error_too(tmp_path: Path) -> None:
+    documents = [_role("rbac.authorization.k8s.io/v1")] * 2
+
+    with pytest.raises(ValueError, match=r"role-agent\.yaml would be written twice"):
+        write_documents(documents, tmp_path, "teleport")
+
+
+def test_different_names_do_not_collide(tmp_path: Path) -> None:
+    documents = [
+        _role("rbac.authorization.k8s.io/v1"),
+        _role("iam.aws.m.upbound.io/v1beta1", name="agent-irsa"),
+    ]
+
+    assert len(write_documents(documents, tmp_path, "teleport")) == 2
+
+
+def test_a_collision_across_separate_calls_is_an_error(tmp_path: Path) -> None:
+    """A helm release writes its chart and then its extra resources separately."""
+    write_documents([_role("rbac.authorization.k8s.io/v1")], tmp_path, "teleport")
+
+    with pytest.raises(ValueError, match=r"role-agent\.yaml"):
+        write_documents([_role("iam.aws.m.upbound.io/v1beta1")], tmp_path, "teleport")

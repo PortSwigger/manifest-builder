@@ -14,7 +14,11 @@ from manifest_builder.config import (
     ManifestConfig,
 )
 from manifest_builder.helm import ChartCacheStats
-from manifest_builder.output import dump_yaml, stamp_manifest_id
+from manifest_builder.output import (
+    dump_yaml,
+    reset_written_paths,
+    stamp_manifest_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +151,7 @@ def generate_manifests(
             )
 
     # Generate manifests
+    reset_written_paths()
     # Map the output paths to the config name that generated them
     written_paths: dict[Path, str] = {}
     cache_stats = ChartCacheStats()
