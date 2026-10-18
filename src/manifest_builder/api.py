@@ -155,7 +155,18 @@ def generate(
         ) | _load_non_system_owned_namespaces(output)
         _clear_output_roots(output, system_roots_before - owned_namespaces)
     else:
-        owned_namespaces = load_owned_namespaces(config) | load_owned_namespaces(output)
+        # <namespace>.toml is this builder's own declaration from an earlier
+        # run; a claim on the namespace from any other owner file, system.toml
+        # included, is a conflict rather than something to overwrite.
+        claimed_elsewhere = load_owned_namespaces(
+            output, exclude_owner_files={f"{namespace}.toml"}
+        )
+        if namespace in claimed_elsewhere:
+            raise ValueError(
+                f"Namespace '{namespace}' is already owned by another owner "
+                f"(listed in owners/), so it cannot be generated in namespace mode"
+            )
+        owned_namespaces = load_owned_namespaces(config) | claimed_elsewhere
         owned_namespaces.discard(namespace)
         _clear_output_roots(output, {namespace})
     if verbose and owned_namespaces:

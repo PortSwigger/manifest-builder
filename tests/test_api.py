@@ -671,7 +671,9 @@ def test_generate_namespace_mode_writes_owner_file(
         default_image=None,
         target=None,
     )
-    mock_load_owned_namespaces.assert_has_calls([call(config), call(output)])
+    mock_load_owned_namespaces.assert_has_calls(
+        [call(output, exclude_owner_files={"team-a.toml"}), call(config)]
+    )
     mock_generate_manifests.assert_called_once_with(
         blocks=["resolved"],
         output_dir=output,
@@ -682,6 +684,61 @@ def test_generate_namespace_mode_writes_owner_file(
         managed_namespaces={"team-a"},
         cleanup=False,
     )
+
+
+def _namespace_mode_setup(tmp_path: Path) -> tuple[Path, Path]:
+    config = tmp_path / "config"
+    output = tmp_path / "output"
+    config.mkdir()
+    output.mkdir()
+    (config / "config.toml").write_text(
+        '[[demo]]\nimage = "registry.example.com/team-a:1.0"\n'
+    )
+    write_demo_plugin(config)
+    return config, output
+
+
+@pytest.mark.parametrize(
+    ("owner_file", "owned"),
+    [
+        ("system.toml", '["team-a", "other"]'),
+        ("other-team.toml", '"team-a"'),
+    ],
+)
+def test_generate_namespace_mode_rejects_a_namespace_owned_by_another_owner(
+    tmp_path: Path, owner_file: str, owned: str
+) -> None:
+    """Namespace mode refuses a namespace another owner already declares.
+
+    Writing owners/<namespace>.toml next to the other owner's claim would make
+    that owner's next run fail on its own namespace.
+    """
+    config, output = _namespace_mode_setup(tmp_path)
+    owners = output / "owners"
+    owners.mkdir()
+    (owners / owner_file).write_text(f"owned = {owned}\n")
+
+    with pytest.raises(ValueError, match="'team-a' is already owned by another"):
+        api_generate(config, output, repo_root=tmp_path, namespace="team-a")
+
+    assert not (owners / "team-a.toml").exists()
+    assert not (output / "team-a").exists()
+
+
+def test_generate_namespace_mode_regenerates_its_own_namespace(
+    tmp_path: Path,
+) -> None:
+    """A namespace owner's earlier declaration does not count as a conflict."""
+    config, output = _namespace_mode_setup(tmp_path)
+    owners = output / "owners"
+    owners.mkdir()
+    (owners / "team-a.toml").write_text('owned = "team-a"\n')
+    (owners / "system.toml").write_text('owned = ["other"]\n')
+
+    api_generate(config, output, repo_root=tmp_path, namespace="team-a")
+
+    assert (owners / "team-a.toml").read_text() == 'owned = "team-a"\n'
+    assert (output / "team-a").is_dir()
 
 
 @mock.patch("manifest_builder.api.generate_manifests")
