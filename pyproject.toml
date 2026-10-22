@@ -3,7 +3,9 @@ name = "manifest-builder"
 dynamic = ["version"]
 description = "Generate materialized Kubernetes manifests from configuration input"
 readme = "README.md"
-requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
 dependencies = [
     "click",
     "pyyaml",
@@ -20,21 +22,27 @@ dev = [
     "ruff",
     "ty",
     "simple503",
+    "hypothesis>=6.170.5",
 ]
 
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
 
-[tool.hatch.version]
-source = "vcs"
-raw-options = { version_scheme = "post-release" }
+[tool.maturin]
+manifest-path = "rust/Cargo.toml"
+python-source = "src"
+module-name = "manifest_builder._fastyaml"
 
-[tool.hatch.build.hooks.vcs]
-version-file = "src/manifest_builder/_version.py"
-
-[tool.ruff]
-exclude = ["src/manifest_builder/_version.py"]
+[tool.uv]
+# uv only rebuilds the project when one of these changes, so the Rust sources
+# have to be listed for an edit to them to reach `uv run`.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "rust/Cargo.toml" },
+    { file = "rust/Cargo.lock" },
+    { file = "rust/src/**/*.rs" },
+]
 
 [tool.ruff.lint]
 # Config blocks report malformed user configuration consistently as ValueError.

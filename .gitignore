@@ -21,5 +21,8 @@ output/
 # Local Python version
 .python-version
 
-# Auto-generated version file
-src/manifest_builder/_version.py
+# Rust build output
+rust/target/
+
+# Native extension built in place by editable installs
+src/manifest_builder/*.so

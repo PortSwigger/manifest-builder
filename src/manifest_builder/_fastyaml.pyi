@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: The manifest-builder contributors
+from collections.abc import Iterable
+from typing import Any
+
+class Fallback(Exception): ...
+
+def load_all(text: str) -> list[Any]: ...
+def dump_all(docs: Iterable[Any]) -> str: ...

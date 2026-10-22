@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import pystache
-import yaml
 from pystache.common import MissingTags
 
 from manifest_builder.blocks import ConfigBlock, GenerationContext
@@ -25,7 +24,7 @@ from manifest_builder.k8s import (
     make_configmaps,
     make_k8s_name,
 )
-from manifest_builder.output import write_documents
+from manifest_builder.output import load_all_yaml, write_documents
 
 
 @dataclass
@@ -186,9 +185,7 @@ def generate_copy(
         text = yaml_file.read_text()
         text = renderer.render(text, context)
 
-        for doc in yaml.safe_load_all(text):
-            if doc:
-                docs.append(doc)
+        docs.extend(load_all_yaml(text))
 
     crd_scopes = load_crd_scopes(docs)
     needs_namespace = bool(config.config) or any(

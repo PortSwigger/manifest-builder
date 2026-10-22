@@ -14,6 +14,9 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    env:
+      # Optimised builds of the extension are for the wheels; tests only need one.
+      MATURIN_PEP517_ARGS: --profile dev
 
     steps:
       - name: Check out repository
@@ -38,3 +41,12 @@ jobs:
 
       - name: Run ty check
         run: uv run --locked --group dev ty check
+
+      - name: Run cargo fmt --check
+        run: cargo fmt --manifest-path rust/Cargo.toml --check
+
+      - name: Run cargo clippy
+        run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+
+  wheels:
+    uses: ./.github/workflows/wheels.yml

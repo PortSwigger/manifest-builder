@@ -1,0 +1,21 @@
+[package]
+name = "manifest-builder-fastyaml"
+# Replaced with the version from the git tag when a release is built.
+version = "0.0.0"
+description = "Native YAML loading and dumping for manifest-builder"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "_fastyaml"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py314"] }
+regex = "1"
+saphyr-parser = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1

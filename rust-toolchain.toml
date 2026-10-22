@@ -1,0 +1,5 @@
+[toolchain]
+# Older toolchains build extensions that the dyld in recent macOS releases
+# refuses to load ("mis-aligned LINKEDIT string pool").
+channel = "1.99"
+components = ["clippy", "rustfmt"]
