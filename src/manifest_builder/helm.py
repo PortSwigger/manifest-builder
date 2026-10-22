@@ -67,7 +67,7 @@ def check_helm_available() -> bool:
             timeout=5,
         )
         return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError, subprocess.TimeoutExpired:
         return False
 
 

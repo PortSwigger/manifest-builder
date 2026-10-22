@@ -545,12 +545,12 @@ def parse_variables(
 
 def load_configs(
     config_dir: Path,
-    blocks: "Sequence[ConfigBlock]",
+    blocks: Sequence[ConfigBlock],
     extra_variables: dict[str, TemplateValue] | None = None,
     default_namespace: str | None = None,
     default_image: str | None = None,
     target: str | None = None,
-) -> "Sequence[ConfigBlock]":
+) -> Sequence[ConfigBlock]:
     """
     Load app configurations from the config directory.
 
@@ -648,7 +648,7 @@ def _load_target_sections(
     config_dir: Path,
     toml_file: Path,
     data: dict,
-    block_by_name: "dict[str, ConfigBlock]",
+    block_by_name: dict[str, ConfigBlock],
     target: str | None,
     extra_variables: dict[str, TemplateValue] | None,
     default_namespace: str | None,
@@ -702,7 +702,7 @@ def _load_target_sections(
 def _load_config_blocks(
     toml_file: Path,
     data: dict,
-    block_by_name: "dict[str, ConfigBlock]",
+    block_by_name: dict[str, ConfigBlock],
     variables: dict[str, TemplateValue],
     default_namespace: str | None,
     default_image: str | None,
@@ -733,9 +733,9 @@ def _load_config_blocks(
 
 
 def resolve_configs(
-    blocks: "Sequence[ConfigBlock]",
+    blocks: Sequence[ConfigBlock],
     helmfile: Helmfile | None,
-) -> "Sequence[ConfigBlock]":
+) -> Sequence[ConfigBlock]:
     """
     Resolve helmfile release references, filling in chart/repo/version.
 

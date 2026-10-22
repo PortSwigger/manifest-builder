@@ -59,12 +59,12 @@ def setup_logging(verbose: bool = False) -> None:
 class _GenerationJob:
     # Each job pairs a block with one of its own configs, an invariant
     # established by _collect_generation_jobs().
-    block: "ConfigBlock[Any]"
+    block: ConfigBlock[Any]
     config: ManifestConfig
 
 
 def _collect_generation_jobs(
-    blocks: "Sequence[ConfigBlock[Any]]",
+    blocks: Sequence[ConfigBlock[Any]],
 ) -> list[_GenerationJob]:
     """Pair each loaded config with exactly one registered block."""
     all_configs = tuple(config for block in blocks for config in block.iter_configs())
@@ -91,7 +91,7 @@ def _collect_generation_jobs(
 
 
 def generate_manifests(
-    blocks: "Sequence[ConfigBlock[Any]]",
+    blocks: Sequence[ConfigBlock[Any]],
     output_dir: Path,
     repo_root: Path,
     *,

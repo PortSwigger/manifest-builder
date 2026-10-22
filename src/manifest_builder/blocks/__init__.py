@@ -74,7 +74,7 @@ class ConfigBlock[ConfigT: ManifestConfig](ABC):
     def iter_configs(self) -> Iterable[ConfigT]:
         """Yield the parsed configs this block is responsible for."""
 
-    def resolve(self, helmfile: "Helmfile | None") -> None:
+    def resolve(self, helmfile: Helmfile | None) -> None:
         """Resolve references after all blocks have parsed their configs."""
 
     @abstractmethod

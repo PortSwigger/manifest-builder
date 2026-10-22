@@ -27,13 +27,29 @@ YAML file size alone is not a reliable measure of this limit.
 
 ## Development
 
-This project is using [uv](https://docs.astral.sh/uv/) for development. To set up your dev environment,
-run `uv sync`. Tests and checks can be run with the following commands:
+This project is using [uv](https://docs.astral.sh/uv/) for development. YAML is
+loaded and dumped by a native extension written in Rust (`rust/`), so building
+it also needs [rustup](https://rustup.rs/); `rust-toolchain.toml` selects the
+toolchain. To set up your dev environment, run `uv sync`, which compiles the
+extension. `uv run` recompiles it after a change to the Rust sources. Tests and
+checks can be run with the following commands:
 
 - `uv run ruff check`
 - `uv run ruff format --check`
 - `uv run ty check`
 - `uv run pytest`
+- `cargo fmt --manifest-path rust/Cargo.toml --check`
+- `cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings`
+
+Set `MATURIN_PEP517_ARGS="--profile dev"` for faster, unoptimised builds of
+the extension while developing.
+
+The extension produces the same documents and the same bytes as PyYAML with
+libyaml, which the manifest-id annotation relies on, and hands anything it
+does not cover back to PyYAML. Its loader follows YAML 1.2 rather than PyYAML's
+YAML 1.1 in a few whitespace corner cases that manifests do not use: NEL, LS
+and PS are content rather than line breaks, and some malformed block scalars
+are accepted. `tests/test_fastyaml.py` compares both directions against PyYAML.
 
 ## Requirements
 

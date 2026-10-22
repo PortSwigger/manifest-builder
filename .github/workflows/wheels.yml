@@ -1,0 +1,99 @@
+name: Build wheels
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to take the version from, such as v1.2.3. Builds are versioned 0.0.0 without one.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: Wheel (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set version from tag
+        if: inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          sed -i.bak -E "s/^version = \".*\"/version = \"${TAG#v}\"/" rust/Cargo.toml
+          rm rust/Cargo.toml.bak
+
+      # One abi3 wheel per platform serves Python 3.14 and every later version.
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: "2_28"
+          args: --release --out dist
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      - name: Test wheel
+        run: |
+          for python in 3.14 3.15; do
+            uv run --isolated --no-project --python "$python" \
+              --with dist/*.whl --with pytest --with hypothesis \
+              pytest tests
+          done
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set version from tag
+        if: inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: sed -i -E "s/^version = \".*\"/version = \"${TAG#v}\"/" rust/Cargo.toml
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-sdist
+          path: dist/

@@ -13,12 +13,18 @@ import json
 import logging
 import re
 import threading
+from functools import cache
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from manifest_builder.k8s import is_cluster_scoped, load_crd_scopes
+
+try:
+    from manifest_builder import _fastyaml
+except ImportError:  # pragma: no cover - only when built without the extension
+    _fastyaml = None
 
 logger = logging.getLogger(__name__)
 
@@ -71,25 +77,75 @@ def _literal_str_representer(dumper: yaml.Dumper, data: str) -> yaml.Node:
 yaml.add_representer(str, _literal_str_representer, Dumper=YAML_DUMPER)
 
 
+@cache
+def _warn_native_yaml_unavailable() -> None:
+    """Say once per process that all YAML goes through PyYAML."""
+    logger.warning(
+        "manifest-builder was built without its native YAML extension; "
+        "loading and dumping YAML with PyYAML, which is slower"
+    )
+
+
+def _describe_documents(docs: list[Any]) -> str:
+    """Name the objects in ``docs`` for a log message, as far as they say."""
+    names = []
+    for doc in docs:
+        if isinstance(doc, dict):
+            metadata = doc.get("metadata")
+            name = metadata.get("name") if isinstance(metadata, dict) else None
+            names.append(f"{doc.get('kind', 'object')}/{name or '?'}")
+        else:
+            names.append(type(doc).__name__)
+    return ", ".join(names) or "no documents"
+
+
 def load_all_yaml(content: str) -> list[Any]:
-    """Parse a multi-document YAML string, dropping empty documents."""
+    """Parse a multi-document YAML string, dropping empty documents.
+
+    The native loader handles the YAML that manifests are made of and hands
+    anything else, such as merge keys, timestamps and syntax errors, back to
+    PyYAML. It reads the same documents as PyYAML apart from a few YAML 1.2
+    whitespace corner cases described in the README.
+    """
+    if _fastyaml is None:
+        _warn_native_yaml_unavailable()
+    else:
+        try:
+            return [doc for doc in _fastyaml.load_all(content) if doc]
+        except _fastyaml.Fallback as e:
+            logger.debug(
+                "Loading %d characters of YAML with PyYAML instead of the native "
+                "loader: %s",
+                len(content),
+                e,
+            )
     return [doc for doc in yaml.load_all(content, Loader=YAML_LOADER) if doc]
 
 
 def dump_yaml(doc: Any, stream: Any) -> None:
     """Write a single YAML document to ``stream``."""
-    yaml.dump(
-        doc,
-        stream,
-        Dumper=YAML_DUMPER,
-        default_flow_style=False,
-        sort_keys=False,
-        allow_unicode=True,
-    )
+    stream.write(dump_all_yaml([doc]))
 
 
 def dump_all_yaml(docs: list[Any]) -> str:
-    """Serialize documents into a single multi-document YAML string."""
+    """Serialize documents into a single multi-document YAML string.
+
+    The native dumper writes the same bytes as PyYAML's CDumper with the
+    representer above, which the manifest-id annotation depends on. It hands
+    whatever it does not cover, such as types other than the JSON-like ones
+    and objects that appear twice in a document, back to PyYAML.
+    """
+    if _fastyaml is None:
+        _warn_native_yaml_unavailable()
+    else:
+        try:
+            return _fastyaml.dump_all(docs)
+        except _fastyaml.Fallback as e:
+            logger.debug(
+                "Dumping %s with PyYAML instead of the native dumper: %s",
+                _describe_documents(docs),
+                e,
+            )
     stream = io.StringIO()
     yaml.dump_all(
         docs,
