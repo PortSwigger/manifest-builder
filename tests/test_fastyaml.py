@@ -265,8 +265,13 @@ def test_dump_matches_pyyaml_for_generated_documents(docs: list[Any]) -> None:
 def test_readable_dump_preserves_document_content(docs: list[Any]) -> None:
     assert same(
         pyyaml_load_all(dump_all(docs, readable=True)),
-        pyyaml_load_all(pyyaml_dump_all(docs)),
+        pyyaml_load_all(dump_all(docs)),
     )
+
+
+@pytest.mark.parametrize("value", ["\x85", "\u2028", "\u2029"])
+def test_readable_dump_preserves_yaml_1_1_line_break_characters(value: str) -> None:
+    assert yaml.load(dump_all([value], readable=True), Loader=yaml.SafeLoader) == value
 
 
 @pytest.mark.parametrize(
