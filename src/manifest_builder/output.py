@@ -77,6 +77,27 @@ def _literal_str_representer(dumper: yaml.Dumper, data: str) -> yaml.Node:
 yaml.add_representer(str, _literal_str_representer, Dumper=YAML_DUMPER)
 
 
+class _ReadableDumper(yaml.Dumper):
+    """Keep literal blocks even when their lines have trailing spaces.
+
+    libyaml refuses block style for these strings. PyYAML's Python emitter
+    can write them losslessly once its conservative style check is relaxed.
+    Control characters still require quoted, escaped output.
+    """
+
+    def analyze_scalar(self, scalar: str) -> Any:
+        analysis = super().analyze_scalar(scalar)
+        if "\n" in scalar and not analysis.allow_block:
+            without_trailing_spaces = re.sub(r" +(?=\n|$)", "", scalar)
+            analysis.allow_block = (
+                super().analyze_scalar(without_trailing_spaces).allow_block
+            )
+        return analysis
+
+
+_ReadableDumper.add_representer(str, _literal_str_representer)
+
+
 @cache
 def _warn_native_yaml_unavailable() -> None:
     """Say once per process that all YAML goes through PyYAML."""
@@ -124,22 +145,27 @@ def load_all_yaml(content: str) -> list[Any]:
 
 def dump_yaml(doc: Any, stream: Any) -> None:
     """Write a single YAML document to ``stream``."""
-    stream.write(dump_all_yaml([doc]))
+    stream.write(dump_all_yaml([doc], readable=True))
 
 
-def dump_all_yaml(docs: list[Any]) -> str:
+def dump_all_yaml(docs: list[Any], *, readable: bool = False) -> str:
     """Serialize documents into a single multi-document YAML string.
 
     The native dumper writes the same bytes as PyYAML's CDumper with the
     representer above, which the manifest-id annotation depends on. It hands
     whatever it does not cover, such as types other than the JSON-like ones
     and objects that appear twice in a document, back to PyYAML.
+
+    ``readable`` also permits literal blocks containing trailing spaces,
+    without changing their content. File output uses this mode; manifest-id
+    hashing keeps the original serialization so presentation changes do not
+    change the identity of an object.
     """
     if _fastyaml is None:
         _warn_native_yaml_unavailable()
     else:
         try:
-            return _fastyaml.dump_all(docs)
+            return _fastyaml.dump_all(docs, readable=readable)
         except _fastyaml.Fallback as e:
             logger.debug(
                 "Dumping %s with PyYAML instead of the native dumper: %s",
@@ -150,7 +176,7 @@ def dump_all_yaml(docs: list[Any]) -> str:
     yaml.dump_all(
         docs,
         stream,
-        Dumper=YAML_DUMPER,
+        Dumper=_ReadableDumper if readable else YAML_DUMPER,
         default_flow_style=False,
         sort_keys=False,
         allow_unicode=True,

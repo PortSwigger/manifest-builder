@@ -262,6 +262,28 @@ def test_dump_matches_pyyaml_for_generated_documents(docs: list[Any]) -> None:
 
 @settings(max_examples=500, deadline=None)
 @given(st.lists(documents, min_size=1, max_size=3))
+def test_readable_dump_preserves_document_content(docs: list[Any]) -> None:
+    assert same(
+        pyyaml_load_all(dump_all(docs, readable=True)),
+        pyyaml_load_all(pyyaml_dump_all(docs)),
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["one \ntwo\n", "one\n  \n\n", "one\ntwo ", "  \none\n", " \n \n"],
+)
+def test_readable_dump_matches_python_fallback(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    docs = [{"data": {"nginx.conf": value}}]
+    native = dump_all(docs, readable=True)
+    monkeypatch.setattr(output, "_fastyaml", None)
+    assert native == dump_all_yaml(docs, readable=True)
+
+
+@settings(max_examples=500, deadline=None)
+@given(st.lists(documents, min_size=1, max_size=3))
 def test_load_matches_pyyaml_for_generated_documents(docs: list[Any]) -> None:
     text = pyyaml_dump_all(docs)
     # Read as line breaks by PyYAML's YAML 1.1 and as content by YAML 1.2.

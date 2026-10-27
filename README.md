@@ -50,6 +50,10 @@ does not cover back to PyYAML. Its loader follows YAML 1.2 rather than PyYAML's
 YAML 1.1 in a few whitespace corner cases that manifests do not use: NEL, LS
 and PS are content rather than line breaks, and some malformed block scalars
 are accepted. `tests/test_fastyaml.py` compares both directions against PyYAML.
+Written manifests also use literal blocks for multiline strings with trailing
+spaces, so embedded configuration stays readable without changing its contents.
+Manifest IDs use the original serialization to remain stable across these
+presentation changes.
 
 ## Requirements
 
@@ -79,8 +83,8 @@ generate(Path("conf"), Path("output"), vars={"domain": "example.com"})
 
 Every generated object carries a `noa.re/manifest-id` annotation: a hash of the
 object's generated content, and of nothing else. Generating the same objects
-writes the same bytes whichever manifest-builder version does it, and an object
-that did not change is left exactly as it was. When the output is a git
+produces the same manifest IDs whichever manifest-builder version does it,
+even when output formatting changes. When the output is a git
 checkout, the result's `manifest_ids` gives the manifest-id of each created or
 modified object, so a caller can wait for the cluster to hold that content.
 
