@@ -3,12 +3,14 @@
 """Tests for YAML serialization."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 import yaml
 
+from manifest_builder import output
 from manifest_builder.output import (
     ARGO_SYNC_OPTIONS_ANNOTATION,
     LAST_APPLIED_ANNOTATION,
@@ -107,6 +109,48 @@ def _manifest_id(path: Path) -> str:
     return yaml.safe_load(path.read_text())["metadata"]["annotations"][
         MANIFEST_ID_ANNOTATION
     ]
+
+
+@pytest.mark.parametrize("native", [True, False])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "server {\n    location = / {\n      \n      return 200 'OK';\n    }\n}\n",
+        "one \ntwo\n",
+        "one\ntwo ",
+        "  \none\n\n",
+        "one\n  \n\n",
+        "one\n  ",
+        " \n \n",
+    ],
+)
+def test_configmap_with_trailing_spaces_uses_lossless_literal_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native: bool, value: str
+) -> None:
+    if not native:
+        monkeypatch.setattr(output, "_fastyaml", None)
+    doc = _configmap("loki-gateway", value)
+    canonical = dump_all_yaml([doc])
+    expected_id = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+    [path] = write_documents([doc], tmp_path, "loki")
+
+    text = path.read_text()
+    assert "  key: |" in text
+    assert yaml.safe_load(text)["data"]["key"] == value
+    assert _manifest_id(path) == expected_id
+
+
+@pytest.mark.parametrize("native", [True, False])
+@pytest.mark.parametrize("value", ["one\r\ntwo\n", "one\n\x00two", "one\n\ttwo"])
+def test_readable_output_still_escapes_control_characters(
+    monkeypatch: pytest.MonkeyPatch, native: bool, value: str
+) -> None:
+    if not native:
+        monkeypatch.setattr(output, "_fastyaml", None)
+    text = dump_all_yaml([{"key": value}], readable=True)
+    assert 'key: "' in text
+    assert yaml.safe_load(text)["key"] == value
 
 
 def test_written_objects_carry_a_manifest_id_of_their_content(tmp_path: Path) -> None:

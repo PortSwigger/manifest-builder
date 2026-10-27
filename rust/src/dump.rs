@@ -97,7 +97,7 @@ fn is_blankz(s: &[u8], i: usize) -> bool {
     is_blank(s, i) || is_break(s, i) || s[i] == 0
 }
 
-fn analyze(value: &str) -> Analysis {
+fn analyze(value: &str, readable: bool) -> Analysis {
     let len = value.len();
     if len == 0 {
         return Analysis {
@@ -239,7 +239,9 @@ fn analyze(value: &str) -> Analysis {
         a.flow_plain_allowed = false;
         a.block_plain_allowed = false;
     }
-    if trailing_space {
+    // Trailing spaces are valid block content. Keep libyaml's conservative
+    // choice for hashing, but permit lossless literal blocks in file output.
+    if trailing_space && !readable {
         a.block_allowed = false;
     }
     if break_space {
@@ -251,7 +253,9 @@ fn analyze(value: &str) -> Analysis {
         a.flow_plain_allowed = false;
         a.block_plain_allowed = false;
         a.single_quoted_allowed = false;
-        a.block_allowed = false;
+        if special_characters || !readable {
+            a.block_allowed = false;
+        }
     }
     if line_breaks {
         a.flow_plain_allowed = false;
@@ -275,6 +279,7 @@ struct Scalar {
 }
 
 struct Emitter {
+    readable: bool,
     out: String,
     column: i32,
     whitespace: bool,
@@ -288,8 +293,9 @@ struct Emitter {
 }
 
 impl Emitter {
-    fn new() -> Self {
+    fn new(readable: bool) -> Self {
         Emitter {
+            readable,
             out: String::new(),
             column: 0,
             whitespace: true,
@@ -418,7 +424,7 @@ impl Emitter {
             for (k, v) in d.iter() {
                 self.write_indent();
                 let key = represent_scalar(&k)?;
-                let ka = analyze(&key.value);
+                let ka = analyze(&key.value, self.readable);
                 if !ka.multiline && key.value.len() <= 128 {
                     self.mapping_context = true;
                     self.simple_key_context = true;
@@ -457,7 +463,7 @@ impl Emitter {
             return Ok(());
         }
         let sc = represent_scalar(obj)?;
-        let a = analyze(&sc.value);
+        let a = analyze(&sc.value, self.readable);
         self.emit_scalar(&sc, &a)
     }
 
@@ -823,8 +829,9 @@ fn represent_scalar(obj: &Bound<'_, PyAny>) -> PyResult<Scalar> {
 }
 
 #[pyfunction]
-pub fn dump_all(docs: &Bound<'_, PyAny>) -> PyResult<String> {
-    let mut e = Emitter::new();
+#[pyo3(signature = (docs, *, readable=false))]
+pub fn dump_all(docs: &Bound<'_, PyAny>, readable: bool) -> PyResult<String> {
+    let mut e = Emitter::new(readable);
     let mut first = true;
     for doc in docs.try_iter()? {
         let doc = doc?;
