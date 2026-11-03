@@ -4,6 +4,7 @@
 
 import logging
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from functools import cache
@@ -81,7 +82,10 @@ def pull_chart(
     """
     Pull a chart from a repository and untar it to a local directory.
 
-    Skips the pull if the destination already exists.
+    Skips the pull if the destination already exists. helm unpacks into a
+    staging directory inside ``dest``, which is renamed into place once the
+    chart is complete, so concurrent pulls of the same chart don't collide and
+    a failed pull leaves nothing behind to be taken for a cached chart.
 
     Args:
         chart: Chart name or OCI URL (e.g., "mychart" or "oci://registry.com/mychart")
@@ -94,7 +98,7 @@ def pull_chart(
         Path to the untarred chart directory
 
     Raises:
-        RuntimeError: If helm pull fails
+        RuntimeError: If helm pull fails or unpacks no chart
     """
     # Determine actual chart name for the directory
     if chart.startswith("oci://"):
@@ -119,41 +123,60 @@ def pull_chart(
     logger.debug(f"Chart cache miss: {chart} -> {chart_dir}")
     logger.info(f"Downloading chart {chart}{source_str}{version_str}")
 
-    cmd = ["helm", "pull"]
-    cmd.append(chart)
+    with tempfile.TemporaryDirectory(prefix=".pull-", dir=dest) as staging:
+        cmd = ["helm", "pull"]
+        cmd.append(chart)
 
-    if repo:
-        cmd.extend(["--repo", repo])
+        if repo:
+            cmd.extend(["--repo", repo])
 
-    cmd.extend(["--untar", "--untardir", str(dest)])
+        cmd.extend(["--untar", "--untardir", staging])
 
-    if version:
-        cmd.extend(["--version", version])
+        if version:
+            cmd.extend(["--version", version])
 
-    logger.debug(f"Executing: {' '.join(cmd)}")
+        logger.debug(f"Executing: {' '.join(cmd)}")
 
-    try:
-        start = time.perf_counter()
-        subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=120,
-        )
-        elapsed = time.perf_counter() - start
-        logger.info(f"Downloaded chart {chart} in {elapsed:.2f}s")
-        logger.debug(f"Successfully unpacked chart to {chart_dir}")
-    except subprocess.CalledProcessError as e:
-        cmd_str = " ".join(cmd)
-        raise RuntimeError(
-            f"helm pull failed for {chart}:\n  Command: {cmd_str}\n  Error: {e.stderr}"
-        ) from e
-    except subprocess.TimeoutExpired as e:
-        cmd_str = " ".join(cmd)
-        raise RuntimeError(
-            f"helm pull timed out for {chart}:\n  Command: {cmd_str}"
-        ) from e
+        try:
+            start = time.perf_counter()
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=120,
+            )
+            elapsed = time.perf_counter() - start
+            logger.info(f"Downloaded chart {chart} in {elapsed:.2f}s")
+        except subprocess.CalledProcessError as e:
+            cmd_str = " ".join(cmd)
+            raise RuntimeError(
+                f"helm pull failed for {chart}:\n  Command: {cmd_str}\n  Error: {e.stderr}"
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            cmd_str = " ".join(cmd)
+            raise RuntimeError(
+                f"helm pull timed out for {chart}:\n  Command: {cmd_str}"
+            ) from e
+
+        unpacked = Path(staging) / actual_chart_name
+        # helm creates this directory before it unpacks anything, so only a
+        # Chart.yaml shows that the chart landed in it.
+        if not (unpacked / "Chart.yaml").is_file():
+            cmd_str = " ".join(cmd)
+            raise RuntimeError(
+                f"helm pull for {chart} unpacked no {actual_chart_name}/Chart.yaml:\n"
+                f"  Command: {cmd_str}"
+            )
+        try:
+            unpacked.rename(chart_dir)
+        except OSError:
+            # A concurrent pull renamed its copy into place first; use that one.
+            if not chart_dir.is_dir():
+                raise
+            logger.debug(f"Chart {chart} was pulled concurrently; using {chart_dir}")
+        else:
+            logger.debug(f"Successfully unpacked chart to {chart_dir}")
 
     return chart_dir
 
