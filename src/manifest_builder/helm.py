@@ -3,6 +3,7 @@
 """Helm command execution for generating manifests."""
 
 import logging
+import shutil
 import subprocess
 import tempfile
 import time
@@ -11,6 +12,23 @@ from functools import cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Pauses before each retry of a helm pull that failed for a reason that can
+# clear on its own, so up to five attempts: one at once, an immediate retry,
+# then after 5, 10 and 20 seconds.
+PULL_RETRY_DELAYS_SECONDS = (0.0, 5.0, 10.0, 20.0)
+
+# What helm's stderr says when the chart, the version or the credentials are
+# wrong, which trying again cannot fix.
+_PERMANENT_PULL_FAILURES = (
+    "not found",
+    "404",
+    "401",
+    "403",
+    "unauthorized",
+    "denied",
+    "forbidden",
+)
 
 
 @dataclass
@@ -72,6 +90,20 @@ def check_helm_available() -> bool:
         return False
 
 
+def _is_permanent_pull_failure(stderr: str | None) -> bool:
+    lowered = (stderr or "").lower()
+    return any(marker in lowered for marker in _PERMANENT_PULL_FAILURES)
+
+
+def _empty_directory(directory: Path) -> None:
+    """Remove what a failed attempt left, so the next one starts clean."""
+    for entry in directory.iterdir():
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+
+
 def pull_chart(
     chart: str,
     dest: Path,
@@ -85,7 +117,9 @@ def pull_chart(
     Skips the pull if the destination already exists. helm unpacks into a
     staging directory inside ``dest``, which is renamed into place once the
     chart is complete, so concurrent pulls of the same chart don't collide and
-    a failed pull leaves nothing behind to be taken for a cached chart.
+    a failed pull leaves nothing behind to be taken for a cached chart. A pull
+    that fails for a reason that can clear, such as a 504 from the registry or a
+    timeout, is retried after the pauses in PULL_RETRY_DELAYS_SECONDS.
 
     Args:
         chart: Chart name or OCI URL (e.g., "mychart" or "oci://registry.com/mychart")
@@ -137,27 +171,43 @@ def pull_chart(
 
         logger.debug(f"Executing: {' '.join(cmd)}")
 
-        try:
-            start = time.perf_counter()
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=120,
+        delays = iter(PULL_RETRY_DELAYS_SECONDS)
+        while True:
+            try:
+                start = time.perf_counter()
+                subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=120,
+                )
+                elapsed = time.perf_counter() - start
+                logger.info(f"Downloaded chart {chart} in {elapsed:.2f}s")
+                break
+            except subprocess.CalledProcessError as e:
+                delay = next(delays, None)
+                if delay is None or _is_permanent_pull_failure(e.stderr):
+                    cmd_str = " ".join(cmd)
+                    raise RuntimeError(
+                        f"helm pull failed for {chart}:\n"
+                        f"  Command: {cmd_str}\n  Error: {e.stderr}"
+                    ) from e
+                reason = (e.stderr or "").strip()
+            except subprocess.TimeoutExpired as e:
+                delay = next(delays, None)
+                if delay is None:
+                    cmd_str = " ".join(cmd)
+                    raise RuntimeError(
+                        f"helm pull timed out for {chart}:\n  Command: {cmd_str}"
+                    ) from e
+                reason = "timed out"
+            logger.warning(
+                f"helm pull of {chart} failed ({reason}); retrying in {delay:.0f}s"
             )
-            elapsed = time.perf_counter() - start
-            logger.info(f"Downloaded chart {chart} in {elapsed:.2f}s")
-        except subprocess.CalledProcessError as e:
-            cmd_str = " ".join(cmd)
-            raise RuntimeError(
-                f"helm pull failed for {chart}:\n  Command: {cmd_str}\n  Error: {e.stderr}"
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            cmd_str = " ".join(cmd)
-            raise RuntimeError(
-                f"helm pull timed out for {chart}:\n  Command: {cmd_str}"
-            ) from e
+            _empty_directory(Path(staging))
+            if delay > 0:
+                time.sleep(delay)
 
         unpacked = Path(staging) / actual_chart_name
         # helm creates this directory before it unpacks anything, so only a

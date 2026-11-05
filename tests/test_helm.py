@@ -5,7 +5,7 @@
 import logging
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -13,6 +13,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from manifest_builder.helm import ChartCacheStats, pull_chart, run_helm_template
+
+
+@pytest.fixture(autouse=True)
+def no_retry_sleep() -> Iterator[MagicMock]:
+    with patch("manifest_builder.helm.time.sleep") as sleep:
+        yield sleep
 
 
 def _fake_helm_pull(
@@ -218,6 +224,61 @@ def test_pull_chart_failed_pull_leaves_nothing_cached(
 
     assert cache_stats.misses == 1
     assert (result / "Chart.yaml").is_file()
+
+
+@patch("manifest_builder.helm.subprocess.run")
+def test_pull_chart_retries_transient_failure_then_succeeds(
+    mock_run: MagicMock, tmp_path: Path, no_retry_sleep: MagicMock
+) -> None:
+    gateway_timeout = subprocess.CalledProcessError(
+        1,
+        ["helm"],
+        stderr="Error: failed to fetch https://x/a.tgz : 504 Gateway Time-out",
+    )
+    succeed = _fake_helm_pull("alloy")
+    outcomes: list[Exception | None] = [gateway_timeout, None]
+
+    def run(cmd: list[str], **kwargs: object) -> MagicMock:
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+        return succeed(cmd, **kwargs)
+
+    mock_run.side_effect = run
+
+    result = pull_chart("alloy", tmp_path)
+
+    assert (result / "Chart.yaml").is_file()
+    assert mock_run.call_count == 2
+    no_retry_sleep.assert_not_called()
+
+
+@patch("manifest_builder.helm.subprocess.run")
+def test_pull_chart_gives_up_after_five_attempts(
+    mock_run: MagicMock, tmp_path: Path, no_retry_sleep: MagicMock
+) -> None:
+    mock_run.side_effect = subprocess.TimeoutExpired(["helm"], 120)
+
+    with pytest.raises(RuntimeError, match="helm pull timed out for alloy"):
+        pull_chart("alloy", tmp_path)
+
+    assert mock_run.call_count == 5
+    assert [call.args[0] for call in no_retry_sleep.call_args_list] == [5.0, 10.0, 20.0]
+    assert list(tmp_path.iterdir()) == []
+
+
+@patch("manifest_builder.helm.subprocess.run")
+def test_pull_chart_does_not_retry_missing_chart(
+    mock_run: MagicMock, tmp_path: Path
+) -> None:
+    mock_run.side_effect = subprocess.CalledProcessError(
+        1, ["helm"], stderr='Error: chart "alloy" version "9" not found'
+    )
+
+    with pytest.raises(RuntimeError, match="helm pull failed for alloy"):
+        pull_chart("alloy", tmp_path)
+
+    assert mock_run.call_count == 1
 
 
 @patch("manifest_builder.helm.subprocess.run")
