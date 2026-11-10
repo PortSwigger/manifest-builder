@@ -175,6 +175,9 @@ Notes:
   target's `vars`, as are variables from `--vars-from` and `generate(vars=...)`.
   A variable defined by more than one of these is an error rather than one
   silently winning.
+- Wherever `cluster_name` is defined, a boolean `prod` variable is defined
+  too: true when `cluster_name` ends in `-prod`, false otherwise. A `prod` set
+  explicitly in any of the places above is used instead.
 - `images.toml`, `releases.yaml`, `owners/`, and `plugins/` stay at the top of
   the configuration directory and are shared by every target.
 - Only the sections the selected target names are loaded.
