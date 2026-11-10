@@ -15,12 +15,14 @@ from manifest_builder.blocks import ConfigBlock
 from manifest_builder.blocks.copy import CopyBlock, CopyConfig
 from manifest_builder.config import (
     ManifestConfig,
+    TemplateValue,
     declared_targets,
     load_configs,
     load_extra_variables,
     load_images,
     load_owned_namespaces,
     resolve_configs,
+    with_derived_variables,
 )
 from manifest_builder.discovery import discover_blocks
 
@@ -130,6 +132,7 @@ def test_extra_variables_are_merged_into_helm_configs(tmp_path: Path) -> None:
         "domain": "example.com",
         "cluster_name": "prod",
         "replica_count": 3,
+        "prod": False,
     }
 
 
@@ -155,7 +158,7 @@ def test_extra_variables_without_config_variables(tmp_path: Path) -> None:
     )
     config = only_config(configs)
     assert isinstance(config, CopyConfig)
-    assert config.variables == {"cluster_name": "prod"}
+    assert config.variables == {"cluster_name": "prod", "prod": False}
 
 
 def test_extra_variables_conflict_raises(tmp_path: Path) -> None:
@@ -1049,6 +1052,7 @@ def test_target_vars_reach_every_section(tmp_path: Path) -> None:
         assert config.variables == {
             "cluster_name": "platform-prod",
             "vanity_domain": "portswigger.net",
+            "prod": True,
         }
 
 
@@ -1338,6 +1342,7 @@ def test_section_variables_merge_with_target_vars(tmp_path: Path) -> None:
     assert config.variables == {
         "cluster_name": "platform-dev",
         "domain": "example.com",
+        "prod": False,
     }
 
 
@@ -1411,7 +1416,11 @@ def test_extra_variables_merge_with_target_vars(tmp_path: Path) -> None:
 
     config = only_config(configs)
     assert isinstance(config, CopyConfig)
-    assert config.variables == {"cluster_name": "platform-dev", "build_id": 42}
+    assert config.variables == {
+        "cluster_name": "platform-dev",
+        "build_id": 42,
+        "prod": False,
+    }
 
 
 def test_extra_variable_conflicting_with_target_var_raises(tmp_path: Path) -> None:
@@ -1819,3 +1828,71 @@ def test_target_vars_must_be_scalars(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="must be a string, number, or boolean"):
         load_target_configs(conf, "dev")
+
+
+@pytest.mark.parametrize(
+    ("variables", "prod"),
+    [
+        ({"cluster_name": "platform-prod"}, True),
+        ({"cluster_name": "platform-dev"}, False),
+        ({"cluster_name": "prod"}, False),
+        ({"cluster_name": 3}, False),
+    ],
+)
+def test_prod_is_derived_from_cluster_name(
+    variables: dict[str, TemplateValue], prod: bool
+) -> None:
+    assert with_derived_variables(variables) == {**variables, "prod": prod}
+
+
+def test_prod_is_not_defined_without_cluster_name() -> None:
+    variables: dict[str, TemplateValue] = {"domain": "example.com"}
+    assert with_derived_variables(variables) == variables
+
+
+def test_an_explicit_prod_is_left_alone() -> None:
+    variables: dict[str, TemplateValue] = {"cluster_name": "fe-prod", "prod": False}
+    assert with_derived_variables(variables) == variables
+
+
+def test_target_gets_derived_prod_unless_its_vars_set_it(tmp_path: Path) -> None:
+    """A target's prod follows its cluster_name, unless the target sets prod itself."""
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    write_targets_config(
+        conf,
+        """\
+        version = 2
+
+        [[target]]
+        name = "derived"
+        sections = ["base"]
+        [target.vars]
+        cluster_name = "fe-prod"
+
+        [[target]]
+        name = "explicit"
+        sections = ["base"]
+        [target.vars]
+        cluster_name = "fe-prod"
+        prod = false
+        """,
+    )
+    write_section(
+        conf,
+        "base",
+        """\
+        [[copy]]
+        namespace = "default"
+        source = "app"
+        name = "app"
+        """,
+    )
+
+    derived = only_config(load_target_configs(conf, "derived"))
+    explicit = only_config(load_target_configs(conf, "explicit"))
+
+    assert isinstance(derived, CopyConfig)
+    assert derived.variables["prod"] is True
+    assert isinstance(explicit, CopyConfig)
+    assert explicit.variables["prod"] is False

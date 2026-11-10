@@ -543,6 +543,27 @@ def parse_variables(
     return variables
 
 
+#: Template variable derived from ``cluster_name`` unless a config sets it.
+PROD_VARIABLE = "prod"
+
+
+def with_derived_variables(
+    variables: dict[str, TemplateValue],
+) -> dict[str, TemplateValue]:
+    """Return ``variables`` plus ``prod``: whether ``cluster_name`` ends in ``-prod``.
+
+    ``prod`` is only added where ``cluster_name`` is defined, and a ``prod`` set
+    anywhere in the configuration or passed in is left alone.
+    """
+    if PROD_VARIABLE in variables or "cluster_name" not in variables:
+        return variables
+    cluster_name = variables["cluster_name"]
+    return {
+        **variables,
+        PROD_VARIABLE: isinstance(cluster_name, str) and cluster_name.endswith("-prod"),
+    }
+
+
 def load_configs(
     config_dir: Path,
     blocks: Sequence[ConfigBlock],
@@ -625,11 +646,13 @@ def load_configs(
             f"directly rather than version = {TARGETS_VERSION} targets"
         )
 
-    variables = merge_variables(
-        parse_variables(data.get("variables"), toml_file),
-        str(toml_file),
-        extra_variables or {},
-        "the --vars-from file",
+    variables = with_derived_variables(
+        merge_variables(
+            parse_variables(data.get("variables"), toml_file),
+            str(toml_file),
+            extra_variables or {},
+            "the --vars-from file",
+        )
     )
     _load_config_blocks(
         toml_file,
@@ -682,11 +705,13 @@ def _load_target_sections(
             parse_variables(section_data.get("variables"), section_file),
             str(section_file),
         )
-        variables = merge_variables(
-            variables,
-            "the config directory",
-            extra_variables or {},
-            "the --vars-from file",
+        variables = with_derived_variables(
+            merge_variables(
+                variables,
+                "the config directory",
+                extra_variables or {},
+                "the --vars-from file",
+            )
         )
 
         _load_config_blocks(
