@@ -12,7 +12,7 @@ name = "_fastyaml"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.30", features = ["extension-module", "abi3-py314"] }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py314", "abi3t-py315"] }
 regex = "1"
 saphyr-parser = "0.2"
 

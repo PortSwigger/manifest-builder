@@ -13,21 +13,37 @@ permissions:
 
 jobs:
   wheel:
-    name: Wheel (${{ matrix.platform }})
+    name: Wheel (${{ matrix.platform.name }}, ${{ matrix.wheel.tag }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux-x86_64
+        platform:
+          - name: linux-x86_64
             runner: ubuntu-24.04
             target: x86_64
-          - platform: linux-aarch64
+          - name: linux-aarch64
             runner: ubuntu-24.04-arm
             target: aarch64
-          - platform: macos-arm64
+          - name: macos-arm64
             runner: macos-15
             target: aarch64
-    runs-on: ${{ matrix.runner }}
+        wheel:
+          - tag: cp314-abi3
+            python: "3.14"
+            manylinux_python: cp314-cp314
+            gil: "on"
+            test_standard_315: true
+          - tag: cp314-cp314t
+            python: "3.14t"
+            manylinux_python: cp314-cp314t
+            gil: "off"
+            test_standard_315: false
+          - tag: cp315-abi3.abi3t
+            python: "3.15t"
+            manylinux_python: cp315-cp315t
+            gil: "off"
+            test_standard_315: true
+    runs-on: ${{ matrix.platform.runner }}
 
     steps:
       - name: Check out repository
@@ -43,13 +59,29 @@ jobs:
           sed -i.bak -E "s/^version = \".*\"/version = \"${TAG#v}\"/" rust/Cargo.toml
           rm rust/Cargo.toml.bak
 
-      # One abi3 wheel per platform serves Python 3.14 and every later version.
+      - name: Set up wheel test interpreter
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.wheel.python }}
+
+      - name: Set up standard Python 3.15
+        if: matrix.wheel.test_standard_315
+        id: standard-315
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.15"
+
+      # Linux builds use the interpreter inside the manylinux container.
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
-          target: ${{ matrix.target }}
+          maturin-version: v1.16.0
+          target: ${{ matrix.platform.target }}
           manylinux: "2_28"
-          args: --release --out dist
+          args: >-
+            --release --out dist --interpreter
+            "${{ runner.os == 'Linux' && format('/opt/python/{0}/bin/python', matrix.wheel.manylinux_python) || steps.python.outputs.python-path }}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -57,17 +89,47 @@ jobs:
           enable-cache: false
 
       - name: Test wheel
+        env:
+          WHEEL_TAG: ${{ matrix.wheel.tag }}
+          TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+          EXPECTED_GIL: ${{ matrix.wheel.gil }}
+          STANDARD_315: ${{ steps.standard-315.outputs.python-path }}
         run: |
-          for python in 3.14 3.15; do
-            uv run --isolated --no-project --python "$python" \
-              --with dist/*.whl --with pytest --with hypothesis \
-              pytest tests
-          done
+          wheels=(dist/*-"$WHEEL_TAG"-*.whl)
+          test "${#wheels[@]}" -eq 1
+          test -f "${wheels[0]}"
+
+          check_wheel() {
+            uv run --isolated --no-project --python "$1" \
+              --with "${wheels[0]}" --with pytest --with hypothesis \
+              python - "$2" <<'PY'
+          import sys
+
+          expected_gil = sys.argv[1] == "on"
+          assert sys._is_gil_enabled() == expected_gil, "Unexpected interpreter GIL state"
+
+          from manifest_builder import _fastyaml
+
+          assert _fastyaml.load_all("value: 1") == [{"value": 1}]
+          assert sys._is_gil_enabled() == expected_gil, "Importing _fastyaml changed the GIL state"
+
+          import pytest
+
+          status = pytest.main(["tests"])
+          assert sys._is_gil_enabled() == expected_gil, "Tests changed the GIL state"
+          raise SystemExit(status)
+          PY
+          }
+
+          check_wheel "$TEST_PYTHON" "$EXPECTED_GIL"
+          if [ -n "$STANDARD_315" ]; then
+            check_wheel "$STANDARD_315" on
+          fi
 
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dist-${{ matrix.platform }}
+          name: dist-${{ matrix.platform.name }}-${{ matrix.wheel.tag }}
           path: dist/
 
   sdist:
@@ -89,6 +151,7 @@ jobs:
       - name: Build sdist
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
+          maturin-version: v1.16.0
           command: sdist
           args: --out dist
 
